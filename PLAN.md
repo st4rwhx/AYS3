@@ -199,11 +199,30 @@ toutes les étapes de build/configure de `llvm-ios-probe.yml` (pas
 seulement celle qui vient de mentir) pour ne plus jamais se faire avoir
 par un faux vert sur ce workflow.
 
+**Run #4 (2026-07-18) — `set -o pipefail` a fait son travail : échec
+signalé correctement cette fois, sur exactement la même erreur `-lrt`.**
+Le correctif du run #3 (`list(REMOVE_ITEM AYS3_LLVM_LIBS rt)`) ne
+touchait pas la vraie source : "rt" n'est pas dans notre liste, il est
+ajouté de façon transitive par `libLLVMSupport` lui-même
+(`llvm/lib/Support/CMakeLists.txt` : `if(HAVE_LIBRT) set(system_libs
+${system_libs} rt) endif()`). `HAVE_LIBRT` vient de
+`check_library_exists(rt clock_gettime "" HAVE_LIBRT)` dans
+`config-ix.cmake`, qui réussit à tort ici : notre toolchain iOS force
+`CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY` (nécessaire pour que
+d'autres vérifications marchent en cross-compilation), donc ce check ne
+lie jamais vraiment un exécutable contre `-lrt` — il compile juste une
+`.a`, ce qui réussit toujours, que `librt` existe ou non. Corrigé en
+préemptant le cache : `set(HAVE_LIBRT OFF CACHE BOOL ... FORCE)` avant
+`add_subdirectory(llvm)` — `check_library_exists()` saute son propre test
+si la variable est déjà en cache, donc ça court-circuite le faux positif
+à la source plutôt que de patcher le symptôme.
+
 - **Go/no-go 1a** : `ays3_llvm_probe` compile et link pour arm64-apple-ios
-  en CI — **en attente de confirmation du prochain run** avec le fix
-  `-lrt` (tout le reste était déjà acquis au run #3). (L'exécution réelle
-  sur device, comme pour la Phase 0, restera une étape séparée — un
-  binaire iOS ne tourne pas sur le runner macOS qui le compile.)
+  en CI — **en attente de confirmation du run #5** avec le vrai fix
+  `HAVE_LIBRT`. Tout le reste (les 1629 autres étapes) est acquis depuis
+  le run #3. (L'exécution réelle sur device, comme pour la Phase 0,
+  restera une étape séparée — un binaire iOS ne tourne pas sur le runner
+  macOS qui le compile.)
 
 ### Phase 1b — RPCS3 core compile pour iOS (aucune fonctionnalité encore)
 - Fork `RPCS3/rpcs3` (master, contient déjà PPU+SPU arm64 LLVM) — fait,

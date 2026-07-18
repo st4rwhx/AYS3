@@ -68,6 +68,22 @@ set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
 set(LLVM_ENABLE_LIBXML2 OFF CACHE BOOL "")
 set(LLVM_ENABLE_ZLIB OFF CACHE BOOL "")
 
+# Run #4 (see PLAN.md): removing "rt" from our own link-libraries list
+# (below) did NOT fix the "-lrt" link failure, because it isn't in that
+# list — it's baked into libLLVMSupport's own transitive link libraries by
+# llvm/lib/Support/CMakeLists.txt: `if(HAVE_LIBRT) set(system_libs
+# ${system_libs} rt) endif()`. HAVE_LIBRT comes from config-ix.cmake's
+# `check_library_exists(rt clock_gettime "" HAVE_LIBRT)`, which
+# incorrectly succeeds under this cross-compile: CMAKE_TRY_COMPILE_TARGET_TYPE
+# is STATIC_LIBRARY (ios-ninja-toolchain.cmake needs that for other checks
+# to work at all when cross-compiling), so check_library_exists only ever
+# builds a .a — it never actually invokes the linker against -lrt, so the
+# probe "succeeds" whether or not librt exists. It doesn't, on any Darwin
+# target. check_library_exists() skips its own probe entirely when the
+# result variable is already cached, so pre-seeding it here is the correct
+# fix, not a workaround.
+set(HAVE_LIBRT OFF CACHE BOOL "librt does not exist on Darwin/iOS" FORCE)
+
 add_subdirectory("${LLVM_ROOT}/llvm" "${CMAKE_BINARY_DIR}/llvm_build" EXCLUDE_FROM_ALL)
 
 add_executable(ays3_llvm_probe probe.cpp)
