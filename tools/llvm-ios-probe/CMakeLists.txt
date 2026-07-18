@@ -76,4 +76,11 @@ target_include_directories(ays3_llvm_probe PRIVATE
 	"${CMAKE_BINARY_DIR}/llvm_build/include"
 )
 llvm_map_components_to_libnames(AYS3_LLVM_LIBS AArch64 Core OrcJIT native)
+# Run #3 (see PLAN.md): the resolved component list carries a plain "rt"
+# system library (Linux's librt, for POSIX realtime symbols like
+# clock_gettime that live in libSystem on Apple platforms instead) that
+# doesn't exist for any Darwin target, iOS included, and fails the final
+# link with "library 'rt' not found". Everything else in the 1630-step
+# build succeeded — this was the only broken piece.
+list(REMOVE_ITEM AYS3_LLVM_LIBS rt)
 target_link_libraries(ays3_llvm_probe PRIVATE ${AYS3_LLVM_LIBS})

@@ -60,6 +60,7 @@ jobs:
 
       - name: Stage 1 — configure native llvm-tblgen build
         run: |
+          set -o pipefail
           cmake \
             -B "$GITHUB_WORKSPACE/build-native" \
             -G Ninja \
@@ -79,11 +80,13 @@ jobs:
 
       - name: Stage 1 — build llvm-tblgen + llvm-min-tblgen (native)
         run: |
+          set -o pipefail
           cmake --build "$GITHUB_WORKSPACE/build-native" --target llvm-tblgen llvm-min-tblgen -- -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build_native.log
           ls -la "$GITHUB_WORKSPACE/build-native/bin/"
 
       - name: Stage 2 — configure iOS cross-build (Ninja)
         run: |
+          set -o pipefail
           cmake \
             -B "$GITHUB_WORKSPACE/build-ios" \
             -G Ninja \
@@ -100,6 +103,7 @@ jobs:
 
       - name: Stage 2 — build (Ninja)
         run: |
+          set -o pipefail
           cmake --build "$GITHUB_WORKSPACE/build-ios" -- -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build_ios.log
           echo '## iOS build output (errors, tail)' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

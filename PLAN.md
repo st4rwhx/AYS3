@@ -180,10 +180,30 @@ autres utils) — donc `LLVM_INCLUDE_UTILS=OFF`/`LLVM_BUILD_UTILS=OFF` dans
 notre CMake ne casse pas le mécanisme de substitution vers le tblgen
 natif ; pas besoin de revenir dessus.
 
+**Run #3 (2026-07-18) — le vrai build a tourné, 1629/1630 étapes en succès :**
+`libLLVMCore`, `libLLVMAArch64CodeGen`, `libLLVMAArch64AsmParser`,
+`libLLVMOrcJIT`, `libLLVMExecutionEngine`, `libLLVMJITLink`, tout le reste
+— compilés pour `arm64-apple-ios` en ~14 min (stage 2 seul). C'est la
+preuve empirique que ce que la Phase 1a devait établir est vrai : LLVM se
+compile pour tourner comme bibliothèque hébergée sur iOS, pas seulement
+comme toolchain ciblant iOS. Seule la toute dernière étape (le link de
+`ays3_llvm_probe`) a cassé : `ld: library 'rt' not found` — `librt`
+n'existe pas sur Darwin (ces symboles POSIX temps-réel vivent dans
+libSystem), contrairement à Linux d'où vient cette dépendance résolue par
+`llvm_map_components_to_libnames`. **Le job CI s'est pourtant affiché
+"success"** : le script utilisait `cmake --build ... | tee build_ios.log`
+sans `set -o pipefail`, donc l'échec du build était masqué par le code de
+sortie de `tee` (toujours 0). Corrigé sur les deux fronts : `list(REMOVE_ITEM
+AYS3_LLVM_LIBS rt)` dans le CMake du probe, et `set -o pipefail` ajouté à
+toutes les étapes de build/configure de `llvm-ios-probe.yml` (pas
+seulement celle qui vient de mentir) pour ne plus jamais se faire avoir
+par un faux vert sur ce workflow.
+
 - **Go/no-go 1a** : `ays3_llvm_probe` compile et link pour arm64-apple-ios
-  en CI. (L'exécution réelle sur device, comme pour la Phase 0, restera
-  une étape séparée — un binaire iOS ne tourne pas sur le runner macOS qui
-  le compile.)
+  en CI — **en attente de confirmation du prochain run** avec le fix
+  `-lrt` (tout le reste était déjà acquis au run #3). (L'exécution réelle
+  sur device, comme pour la Phase 0, restera une étape séparée — un
+  binaire iOS ne tourne pas sur le runner macOS qui le compile.)
 
 ### Phase 1b — RPCS3 core compile pour iOS (aucune fonctionnalité encore)
 - Fork `RPCS3/rpcs3` (master, contient déjà PPU+SPU arm64 LLVM) — fait,
