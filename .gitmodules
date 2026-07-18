@@ -1,0 +1,12 @@
+[submodule "external/rpcs3"]
+	path = external/rpcs3
+	url = https://github.com/RPCS3/rpcs3.git
+	shallow = true
+	# Only 3rdparty/llvm/llvm and 3rdparty/asmjit/asmjit are needed right now
+	# (Phase 1a: LLVM-for-iOS probe). Don't `git submodule update --init
+	# --recursive` here — RPCS3 has 40+ nested submodules (Qt-adjacent audio,
+	# ffmpeg, curl, etc.) that are irrelevant until much later phases and
+	# add gigabytes for nothing. Init only what you need:
+	#   git submodule update --init --depth 1 -- external/rpcs3
+	#   cd external/rpcs3 && git submodule update --init --depth 1 -- \
+	#       3rdparty/llvm/llvm 3rdparty/asmjit/asmjit

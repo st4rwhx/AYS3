@@ -96,9 +96,59 @@ dans l'intégration RPCS3.**
 **Go/no-go** : le stub JIT s'exécute sur device réel via StikDebug. Si non
 → on s'arrête là, tout le reste est inutile tant que ce n'est pas résolu.
 
-### Phase 1 — RPCS3 compile pour iOS (aucune fonctionnalité encore)
-- Fork `RPCS3/rpcs3` (master, contient déjà PPU+SPU arm64 LLVM).
-- Merger/porter le fork asmjit requis (`RPCS3/asmjit#1`).
+### Phase 1a — LLVM cross-compile pour iOS (démarrée 2026-07-18)
+**Découverte importante en démarrant Phase 1** : `external/rpcs3/3rdparty/llvm/CMakeLists.txt`
+confirme que RPCS3 n'embarque PAS LLVM par défaut (`BUILD_LLVM OFF`) — sur
+desktop il utilise un LLVM précompilé (Homebrew, paquet système, ou
+libs Windows précompilées). **Il n'existe aucun équivalent "LLVM
+précompilé pour iOS"** : on doit construire LLVM soi-même, croisé pour
+`arm64-apple-ios`, pour qu'il tourne comme bibliothèque DANS l'app iOS
+(pas juste comme toolchain de compilation — RPCS3 a besoin de LLVM comme
+JIT *hébergé sur la cible*). Ni RPCS3 (arm64 = desktop uniquement) ni
+ARMSX2 (n'utilise pas LLVM, recompileur ARM64 écrit à la main) n'ont
+défriché ça. C'est probablement un déverrouillage aussi fondamental que le
+contournement JIT de la Phase 0 — donc, même méthode : l'isoler et le
+valider seul avant de toucher au reste de RPCS3.
+
+Bonne nouvelle trouvée dans le même fichier : RPCS3 a déjà une branche
+`if (ANDROID) ... set(LLVM_TARGETS_TO_BUILD "AArch64" ...)` — donc
+croiser leur build LLVM pour une cible mobile ARM64 non-desktop est un
+chemin déjà emprunté par leur propre CMake, pas une invention totale.
+
+- `external/rpcs3` ajouté comme submodule Git (pointeur de commit, pas de
+  contenu vendored dans AYS3 — voir `.gitmodules`). Seuls
+  `3rdparty/llvm/llvm` (le monorepo LLVM, ~2 Go même en shallow) et
+  `3rdparty/asmjit/asmjit` sont initialisés ; les ~40 autres submodules
+  (Qt-adjacent, ffmpeg, audio...) ne le sont pas — inutiles à ce stade.
+- `tools/llvm-ios-probe/` : projet CMake isolé qui croise UNIQUEMENT
+  LLVM (Core + cible AArch64 + ORC JIT, sans tools/tests/docs/exemples —
+  même périmètre que RPCS3) pour `arm64-apple-ios`, et lie un exécutable
+  `probe.cpp` qui construit une fonction IR triviale et l'exécute via
+  `LLJIT`. Le code C++ a été compilé et **exécuté avec succès en natif
+  sur Linux/x86_64** contre LLVM 19.1.1 avant d'être poussé (`ays3_probe()
+  = 42`) — l'API ORC est donc correcte ; ce qui reste incertain est
+  purement la compilation croisée de LLVM lui-même pour iOS.
+- CI dédiée (`llvm-ios-probe.yml`, `workflow_dispatch` manuel, timeout
+  350 min) — déclenchement manuel exprès, pas sur chaque push, vu le coût
+  en temps.
+- **Risque identifié à l'avance, pas encore résolu** : TableGen
+  (`llvm-tblgen`) doit s'exécuter sur la machine hôte (le Mac) pendant le
+  build même quand on compile LLVM pour iOS — un cross-build LLVM correct
+  a besoin d'un `llvm-tblgen` natif séparé (`LLVM_TABLEGEN`). Le premier
+  run ne le configure pas exprès : plutôt que deviner, on lit l'erreur
+  réelle si c'est le point de blocage, et on corrige avec l'information
+  exacte au lieu de complexifier le CMake sur une supposition.
+- **Go/no-go 1a** : `ays3_llvm_probe` compile et link pour arm64-apple-ios
+  en CI. (L'exécution réelle sur device, comme pour la Phase 0, restera
+  une étape séparée — un `.o` iOS ne tourne pas sur le runner macOS qui le
+  compile.)
+
+### Phase 1b — RPCS3 core compile pour iOS (aucune fonctionnalité encore)
+- Fork `RPCS3/rpcs3` (master, contient déjà PPU+SPU arm64 LLVM) — fait,
+  submodule `external/rpcs3`.
+- Merger/porter le fork asmjit requis (`RPCS3/asmjit#1`) si besoin — à
+  vérifier une fois 1a validée (RPCS3 target ARM64 SPU utilise le chemin
+  LLVM, pas ASMJIT, donc peut-être pas bloquant pour un premier boot).
 - Extraire un **CMake target headless** : couper la dépendance Qt (frontend
   desktop), ne garder que `rpcs3/Emu` (cœur émulation) + les libs core
   nécessaires, sur le modèle de ce qu'ARMSX2 a fait en coupant le Qt de
@@ -169,6 +219,7 @@ dans l'intégration RPCS3.**
 | 5 | Thermal throttling iPhone sous charge Cell BE+RSX soutenue | Perf qui chute après quelques minutes | Attendu, à mesurer |
 | 6 | Obligations GPLv2 non respectées | Risque légal/retrait | Verrouillé dès Phase 0 (voir §1) |
 | 7 | Bus factor (projet solo vs équipe RPCS3/ARMSX2) | Vitesse d'avancement | Accepter un calendrier long, pas "one-shot" |
+| 8 | LLVM cross-compilé pour tourner *sur* iOS (pas juste compiler *pour* iOS) n'a jamais été fait publiquement pour RPCS3 ni ARMSX2 | Peut bloquer toute la Phase 1b si ça ne compile pas | En cours de test isolé, Phase 1a — voir §3 |
 
 ## 5. Ce qu'on réutilise telle quelle (ne pas réinventer)
 
@@ -226,9 +277,11 @@ dans l'intégration RPCS3.**
         sens (§0) — elle tient.
       - **Ce que ça ne prouve pas** : la robustesse dans la durée (risque
         #1 du registre) — un seul device/version iOS testé jusqu'ici.
-        Modèle d'iPhone et version iOS exacte à consigner ici dès qu'on les
-        a (pas visibles dans les captures).
+      - **Device confirmé** : iPhone 15 (A16, donc TXM présent — cohérent
+        avec `LuckTXM`), iOS 26.3. Premier point de données réel du
+        registre de risques §4 (risque #1) — une future version iOS reste
+        susceptible de casser ce chemin, mais on sait maintenant qu'il
+        fonctionne au moins sur cette combinaison précise.
 
-Phase 0 est go. Prochaine étape : Phase 1 (fork RPCS3, build headless
-arm64) — pas encore démarrée, en attente de confirmation avant de cloner un
-dépôt aussi lourd.
+Phase 0 est go, confirmé le 2026-07-18 (iPhone 15 / iOS 26.3). **Phase 1
+démarrée** ci-dessous.

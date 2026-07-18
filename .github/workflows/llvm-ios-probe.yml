@@ -1,0 +1,91 @@
+name: LLVM iOS Probe (Phase 1a)
+
+# Cross-compiles LLVM (Core + AArch64 + ORC JIT only, no tools/tests/docs)
+# from the vendored RPCS3 submodule for arm64-apple-ios, and links a
+# trivial LLJIT probe against it. See tools/llvm-ios-probe/ and
+# RESEARCH.md/PLAN.md for why this is its own isolated milestone before any
+# of RPCS3's actual Emu/Cell code is touched.
+#
+# This is expected to be slow and to need iteration — manual trigger only,
+# not on every push, so it doesn't eat CI time while other Phase 0/1 work
+# is still landing.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build LLVM for iOS arm64 + LLJIT probe
+    runs-on: macos-14
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout AYS3
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init RPCS3 submodule (shallow, no nested submodules yet)
+        run: git submodule update --init --depth 1 -- external/rpcs3
+
+      - name: Init LLVM + asmjit submodules only (shallow)
+        working-directory: external/rpcs3
+        run: git submodule update --init --depth 1 -- 3rdparty/llvm/llvm 3rdparty/asmjit/asmjit
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -z "$XCODE_APP" ]]; then
+            echo "::error::No Xcode.app found in /Applications"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install cmake & ninja
+        run: brew install cmake ninja
+
+      - name: CMake configure
+        run: |
+          cmake \
+            -B "$GITHUB_WORKSPACE/build" \
+            -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            "$GITHUB_WORKSPACE/tools/llvm-ios-probe" 2>&1 | tee cmake_output.txt
+          echo '## CMake Output (tail)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 cmake_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -qE 'Configuring incomplete|CMake Error' cmake_output.txt && exit 1 || exit 0
+
+      - name: Build (xcodebuild)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$GITHUB_WORKSPACE/build/AYS3LLVMiOSProbe.xcodeproj" \
+            -scheme ays3_llvm_probe \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build \
+            2>&1 | tee build.log
+          echo '## Build Output (errors, tail)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E '(error:|Error:|FAILED|BUILD FAILED)' build.log | tail -150 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-ios-probe-logs-${{ github.sha }}
+          path: |
+            cmake_output.txt
+            build.log
+          retention-days: 14
