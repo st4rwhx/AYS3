@@ -182,6 +182,32 @@ build raté, une vraie découverte) :**
 - **Go/no-go** : un `.a`/`.framework` core RPCS3 headless link dans une app
   iOS vide, sans crash au démarrage.
 
+**Reconnaissance faite pendant l'attente de la CI Phase 1a (2026-07-18),
+inspection directe du code RPCS3 vendored — pas de supposition :**
+- RPCS3 a déjà un point d'entrée "headless" (`rpcs3/headless_application.h`,
+  `main_application.cpp`), utilisé pour ses builds CLI/serveur sans
+  interface graphique (`rpcs3qt/`). **Mais "headless" chez RPCS3 ne veut
+  pas dire "sans Qt"** : `headless_application` hérite de
+  `QCoreApplication` (event loop, signaux/slots inter-thread via
+  `RequestCallFromMainThread`) — seul QtWidgets/QtGui est écarté, pas
+  QtCore. Confirmé : `CMakeLists.txt` n'a **aucune option `WITH_QT`** —
+  Qt (au moins QtCore) est une dépendance non-optionnelle du binaire
+  `rpcs3`, contrairement à `WITH_LLVM`/`USE_VULKAN`/etc. qui sont tous
+  des options.
+- Donc "couper Qt" (ligne ci-dessus) est plus gros que prévu : soit (a)
+  compiler QtCore (pas QtWidgets) pour iOS — Qt supporte officiellement
+  iOS depuis longtemps, donc c'est un problème déjà résolu par quelqu'un
+  d'autre, contrairement à LLVM-sur-iOS (Phase 1a) — soit (b) retirer la
+  dépendance `QCoreApplication` du cœur RPCS3 et réimplémenter nous-mêmes
+  la boucle d'événements/le mécanisme cross-thread minimal dont
+  `main_application`/`VMManager` ont besoin. (a) est probablement le
+  chemin le moins risqué (dépendance connue et déjà portée iOS par Qt
+  lui-même) mais ajoute Qt-pour-iOS comme brique supplémentaire du plan —
+  à trancher une fois 1a validé, pas avant.
+- Confirmé aussi : `option(USE_VULKAN "Vulkan render backend" ON)` et
+  `option(USE_SYSTEM_MVK "Prefer system MoltenVK...")` — cohérent avec
+  `RESEARCH.md` (RSX → Vulkan → MoltenVK, pas de renderer Metal natif).
+
 ### Phase 2 — Boot PPU seul, interpréteur, sans RSX
 - Firmware PS3 réel (dumpé par l'utilisateur) chargé et déchiffré par le
   code RPCS3 existant (aucune réécriture nécessaire ici, c'est portable).
