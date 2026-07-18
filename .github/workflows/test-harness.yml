@@ -1,0 +1,47 @@
+name: Test Harness
+
+# Runs the AYS3 differential-testing tooling. See TESTING.md.
+#
+# Today: only tracediff.py's own unit tests (no real RPCS3/AYS3 traces yet,
+# no vendored RPCS3 fork — that lands in Plan Phase 1). Kept on a native
+# macOS arm64 runner on purpose: that's the same architecture family as the
+# eventual reference (RPCS3 desktop arm64 build) and candidate (AYS3 core)
+# builds, so this workflow only grows in place instead of being rewritten.
+
+on:
+  push:
+    paths:
+      - "tools/testharness/**"
+      - ".github/workflows/test-harness.yml"
+  pull_request:
+    paths:
+      - "tools/testharness/**"
+      - ".github/workflows/test-harness.yml"
+  workflow_dispatch: {}
+
+jobs:
+  tracediff-selftest:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tracediff unit tests
+        run: python3 -m unittest discover -s tools/testharness/tests -v
+
+      # --- Phase 1 (blocked, see PLAN.md / TESTING.md) ---
+      # - name: Build reference (RPCS3 desktop, instrumented, arm64 macOS)
+      #   run: ./tools/testharness/build_reference.sh
+      #
+      # - name: Build candidate (AYS3 core, instrumented, arm64 macOS)
+      #   run: ./tools/testharness/build_candidate.sh
+      #
+      # - name: Run corpus and collect traces
+      #   run: ./tools/testharness/run_corpus.sh
+      #
+      # - name: Diff traces (fails the build on first divergence)
+      #   run: |
+      #     for rom in tools/testharness/corpus/*; do
+      #       python3 tools/testharness/tracediff.py \
+      #         "traces/reference/$(basename "$rom").jsonl" \
+      #         "traces/candidate/$(basename "$rom").jsonl"
+      #     done
