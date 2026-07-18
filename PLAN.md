@@ -182,9 +182,7 @@ dans l'intégration RPCS3.**
   cœur RPCS3 au lieu de PCSX2.
 - Le pattern de distribution SideStore/Cloudflare Worker d'AYS2.
 
-## 6. État de la Phase 0
-
-**Code posé, non testé sur device — c'est la prochaine étape immédiate.**
+## 6. État de la Phase 0 — VALIDÉE sur device réel (2026-07-18)
 
 - [x] App SwiftUI squelette (`src/swift/AYS3App.swift`, `ContentView.swift`)
 - [x] Entitlements (`get-task-allow`, `cs.allow-jit`,
@@ -206,13 +204,31 @@ dans l'intégration RPCS3.**
       d'après la cible) ; corrigé en renommant le projet CMake en
       `AYS3iOS`. Ça prouve seulement que **ça compile** — pas que le
       contournement JIT marche.
-- [ ] **Go/no-go réel** : personne n'a encore appuyé sur "Run JIT stub
-      probe" sur un iPhone. Tant que ce n'est pas fait, Phase 0 n'est pas
-      validée — seulement compilée. Je n'ai pas de Mac/Xcode dans cet
-      environnement pour tester moi-même l'exécution réelle ; ça ne peut
-      venir que d'un test sur device par l'utilisateur
-      (`docs/PHASE0_DEVICE_TESTING.md`).
+- [x] **Go/no-go réel — PASS.** Testé sur device réel par l'utilisateur via
+      StikDebug (screenshots, 2026-07-18) :
+      - `CS_DEBUGGED=1`, `jit_mode=LuckTXM` (confirme un SoC A15+ sous iOS 26+).
+      - `mmap(MAP_JIT)` direct échoue bien (err=1/EPERM) comme attendu pour
+        un process `get-task-allow` non entitled `dynamic-codesigning` —
+        confirme qu'on tombe correctement dans le chemin dual-map.
+      - Handshake `brk #0xf00d` (prepare-region **et** detach) acquitté par
+        StikDebug — le PIP StikDebug le confirme côté debugger : "BRK
+        immediate: 0xf00d (61453)", "Invoking command 0", "detachResponse
+        = OK". Notre convention x16=0/1 correspond exactement à ce que
+        StikDebug attend.
+      - Dual-map établi : `rx=0x105890000` / `rw=0x105894000` (offset
+        0x4000, une page à part — cohérent avec `vm_remap`).
+      - Le stub écrit dans la vue RW s'exécute via la vue RX :
+        `stub returned 42 (expected 42)` → **RESULT: PASS**.
+      - **Ce que ça prouve** : le contournement JIT n'est pas juste
+        théorique/copié d'AYS2 — il est vérifié fonctionnel de bout en
+        bout, sur silicium réel, avec notre extraction standalone. C'est la
+        seule fondation sans laquelle tout le reste du plan n'a pas de
+        sens (§0) — elle tient.
+      - **Ce que ça ne prouve pas** : la robustesse dans la durée (risque
+        #1 du registre) — un seul device/version iOS testé jusqu'ici.
+        Modèle d'iPhone et version iOS exacte à consigner ici dès qu'on les
+        a (pas visibles dans les captures).
 
-Je n'ai pas encore lancé le clone de RPCS3 (dépôt lourd, dépendance LLVM,
-build long) — Phase 1 attend que Phase 0 soit vérifiée go sur un vrai
-device, comme prévu au plan initial.
+Phase 0 est go. Prochaine étape : Phase 1 (fork RPCS3, build headless
+arm64) — pas encore démarrée, en attente de confirmation avant de cloner un
+dépôt aussi lourd.
