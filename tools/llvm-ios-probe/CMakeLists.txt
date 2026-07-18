@@ -23,11 +23,18 @@
 
 cmake_minimum_required(VERSION 3.24)
 
+# CMAKE_TOOLCHAIN_FILE (and the CMAKE_SYSTEM_NAME it sets) is only actually
+# processed by CMake during the first project()/enable_language() call — a
+# check before that point always sees the un-cross-compiled host value
+# ("Darwin" on the macOS runner, never "iOS"), regardless of what toolchain
+# file was passed on the command line. This bit run #2 of the Phase 1a CI
+# (see PLAN.md): the guard below used to sit before project() and fired
+# unconditionally. project() must come first.
+project(AYS3LLVMiOSProbe LANGUAGES C CXX)
+
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	message(FATAL_ERROR "This probe targets iOS only (that's the whole point). Configure with -DCMAKE_TOOLCHAIN_FILE=ios-ninja-toolchain.cmake.")
 endif()
-
-project(AYS3LLVMiOSProbe LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

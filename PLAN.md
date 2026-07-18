@@ -131,7 +131,7 @@ chemin déjà emprunté par leur propre CMake, pas une invention totale.
 - CI dédiée (`llvm-ios-probe.yml`, déclenchée sur push scopé à son dossier
   + `workflow_dispatch`, timeout 350 min).
 
-**Run #1 (2026-07-18) — échec après ~4h30 de config seulement (pas un
+**Run #1 (2026-07-18) — échec après ~4min30 de config seulement (pas un
 build raté, une vraie découverte) :**
 - `CMake Error ... TableGen.cmake:239 (install): install TARGETS given no
   BUNDLE DESTINATION for MACOSX_BUNDLE executable target "llvm-tblgen"`.
@@ -160,6 +160,25 @@ build raté, une vraie découverte) :**
      le mécanisme que LLVM documente lui-même pour ce cas
      (`CrossCompile.cmake`), fait explicitement plutôt que de compter sur
      l'automatisme qui vient de casser.
+
+**Run #2 (2026-07-18) — le stage 1 (natif) a marché du premier coup**
+(`llvm-tblgen`/`llvm-min-tblgen` compilés et linkés en moins d'une minute,
+273/273 cibles) — la partie qu'on redoutait le plus s'est avérée simple.
+Le stage 2 (cross iOS) a cassé immédiatement, mais sur une bête erreur à
+nous, pas sur LLVM : notre propre garde `if(NOT CMAKE_SYSTEM_NAME STREQUAL
+"iOS") message(FATAL_ERROR ...)` était placée **avant** l'appel à
+`project()` dans `tools/llvm-ios-probe/CMakeLists.txt`. Or
+`CMAKE_TOOLCHAIN_FILE` (et donc `CMAKE_SYSTEM_NAME=iOS` qu'il définit)
+n'est traité par CMake que pendant le premier `project()` — avant ça, la
+variable vaut encore la valeur hôte native ("Darwin"), donc notre garde
+se déclenchait à tous les coups, peu importe le toolchain passé en ligne
+de commande. Corrigé en déplaçant `project()` avant la vérification.
+Vérifié en plus, en lisant `llvm/CMakeLists.txt` : `add_subdirectory(utils/TableGen)`
+(qui définit `llvm-tblgen`/`llvm-min-tblgen` et lit `LLVM_NATIVE_TOOL_DIR`)
+n'est **pas** conditionné par `LLVM_INCLUDE_UTILS` (contrairement aux
+autres utils) — donc `LLVM_INCLUDE_UTILS=OFF`/`LLVM_BUILD_UTILS=OFF` dans
+notre CMake ne casse pas le mécanisme de substitution vers le tblgen
+natif ; pas besoin de revenir dessus.
 
 - **Go/no-go 1a** : `ays3_llvm_probe` compile et link pour arm64-apple-ios
   en CI. (L'exécution réelle sur device, comme pour la Phase 0, restera
