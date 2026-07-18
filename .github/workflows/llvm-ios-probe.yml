@@ -6,11 +6,17 @@ name: LLVM iOS Probe (Phase 1a)
 # RESEARCH.md/PLAN.md for why this is its own isolated milestone before any
 # of RPCS3's actual Emu/Cell code is touched.
 #
-# This is expected to be slow and to need iteration — manual trigger only,
-# not on every push, so it doesn't eat CI time while other Phase 0/1 work
-# is still landing.
+# This is expected to be slow and to need iteration. workflow_dispatch alone
+# doesn't work from a non-default branch (GitHub only lists dispatchable
+# workflows that exist on the default branch) — so this also triggers on
+# push, scoped to its own path so it doesn't run alongside unrelated
+# changes elsewhere in the repo.
 
 on:
+  push:
+    paths:
+      - "tools/llvm-ios-probe/**"
+      - ".github/workflows/llvm-ios-probe.yml"
   workflow_dispatch: {}
 
 jobs:
