@@ -182,11 +182,29 @@ dans l'intégration RPCS3.**
   cœur RPCS3 au lieu de PCSX2.
 - Le pattern de distribution SideStore/Cloudflare Worker d'AYS2.
 
-## 6. Prochaine étape concrète proposée
+## 6. État de la Phase 0
 
-Démarrer **Phase 0** : app SwiftUI squelette + entitlements + intégration
-StikDebug + `DarwinMisc.cpp` réutilisé + un stub JIT trivial, dans ce repo
-(`AYS3`). C'est isolé, rapide à vérifier, et ça valide la seule fondation
-sans laquelle rien d'autre n'a de sens. Je ne lance pas encore le clone de
-RPCS3 (dépôt lourd, dépendance LLVM, build long) tant que Phase 0 n'est pas
-verte — confirmation souhaitée avant d'attaquer Phase 1.
+**Code posé, non testé sur device — c'est la prochaine étape immédiate.**
+
+- [x] App SwiftUI squelette (`src/swift/AYS3App.swift`, `ContentView.swift`)
+- [x] Entitlements (`get-task-allow`, `cs.allow-jit`,
+      `allow-unsigned-executable-memory`) — identiques à AYS2.
+- [x] `JITBypass.h`/`.cpp` — extraction standalone du mécanisme dual-map/TXM
+      d'AYS2 (`DarwinMisc.cpp`), sans les dépendances PCSX2 dont on n'a pas
+      besoin ici. Même protocole `brk #0xf00d`/`brk #0x69`, même logique
+      `vm_remap`, préservés à l'identique — c'est la partie qui ne doit
+      surtout pas être réinventée à la légère (voir `RESEARCH.md` §4).
+- [x] CMake + générateur Xcode (`src/cpp/CMakeLists.txt`), CI macOS
+      (`.github/workflows/build-ios.yml`) qui produit un IPA non signé.
+- [x] Protocole de test device (`docs/PHASE0_DEVICE_TESTING.md`) : sideload,
+      pairing StikDebug, activation JIT, lecture du résultat.
+- [ ] **Go/no-go réel** : personne n'a encore appuyé sur "Run JIT stub
+      probe" sur un iPhone. Tant que ce n'est pas fait, Phase 0 n'est pas
+      validée — seulement écrite. Je n'ai pas de Mac/Xcode dans cet
+      environnement pour compiler moi-même ; la première vraie preuve
+      viendra soit du run CI (compile), soit du test sur device par
+      l'utilisateur (exécute réellement).
+
+Je n'ai pas encore lancé le clone de RPCS3 (dépôt lourd, dépendance LLVM,
+build long) — Phase 1 attend que Phase 0 soit vérifiée go sur un vrai
+device, comme prévu au plan initial.

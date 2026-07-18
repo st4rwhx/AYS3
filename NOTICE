@@ -1,0 +1,23 @@
+AYS3 — Notice of third-party origin
+
+The JIT bypass mechanism in `src/cpp/JITBypass.h`/`JITBypass.cpp` (dual-mapped
+executable memory, iOS 26 Trusted Execution Monitor detection, the
+`brk #0xf00d`/`brk #0x69` debugger-registration protocol) is adapted from
+`common/Darwin/DarwinMisc.cpp` in this account's own AYS2 project
+(github.com/st4rwhx/AYS2), which itself carries the technique forward from
+the ARMSX2 project (github.com/ARMSX2/ARMSX2, GPL-3.0), a fork of PCSX2
+(github.com/PCSX2/pcsx2, GPL-3.0+, Copyright PCSX2 Dev Team).
+
+AYS3 does not currently vendor or link against RPCS3, ARMSX2, or PCSX2
+source code beyond this adapted JIT bypass technique. See PLAN.md and
+RESEARCH.md — the RPCS3 (GPL-2.0) core fork is Phase 1, not yet started.
+When it lands, this NOTICE will be extended with RPCS3's attribution per
+its own license terms.
+
+This project is licensed GPL-3.0 (see LICENSE), consistent with the license
+of the code the JIT technique was adapted from.
+
+AYS3 §6 written offer (GPL-3.0): the complete corresponding source code for
+any binary distribution of this software is available to any person who
+possesses it, at no charge, for at least three years, by requesting it from
+the maintainer via https://github.com/st4rwhx/AYS3.

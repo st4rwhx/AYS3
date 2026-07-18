@@ -1,0 +1,88 @@
+name: Build AYS3 iOS
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+    paths:
+      - "src/**"
+      - ".github/workflows/build-ios.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build AYS3 (iOS arm64, unsigned)
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -z "$XCODE_APP" ]]; then
+            echo "::error::No Xcode.app found in /Applications"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+
+      - name: Detect iOS SDK
+        run: |
+          set -euo pipefail
+          IOS_DEPLOYMENT_TARGET="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "IOS_SDK=iphoneos" >> "$GITHUB_ENV"
+          echo "IOS_DEPLOYMENT_TARGET=$IOS_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
+
+      - name: CMake configure
+        run: |
+          cmake \
+            -B "$GITHUB_WORKSPACE/build" \
+            -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DAYS3_BUNDLE_IDENTIFIER="com.st4rwhx.ays3" \
+            "$GITHUB_WORKSPACE/src/cpp" 2>&1 | tee cmake_output.txt
+          grep -qE 'Configuring incomplete|Error|error' cmake_output.txt && exit 1 || exit 0
+
+      - name: Build (xcodebuild)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$GITHUB_WORKSPACE/build/AYS3iOS.xcodeproj" \
+            -scheme AYS3iOS \
+            -configuration Release \
+            -sdk "$IOS_SDK" \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            build \
+            2>&1 | tee build.log
+          find "$GITHUB_WORKSPACE/build" -name "AYS3iOS.app" -type d | head -3
+
+      - name: Package IPA
+        run: |
+          APP=$(find "$GITHUB_WORKSPACE/build" -name "AYS3iOS.app" -type d | head -1)
+          if [[ -z "$APP" ]]; then
+            echo "::error::AYS3iOS.app not found under build/"
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/Payload"
+          cp -r "$APP" "$GITHUB_WORKSPACE/Payload/AYS3iOS.app"
+          cd "$GITHUB_WORKSPACE"
+          zip -r AYS3.ipa Payload/
+          ls -lh AYS3.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AYS3-${{ github.sha }}
+          path: AYS3.ipa
+          retention-days: 14
