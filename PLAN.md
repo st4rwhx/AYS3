@@ -198,12 +198,20 @@ dans l'intégration RPCS3.**
       (`.github/workflows/build-ios.yml`) qui produit un IPA non signé.
 - [x] Protocole de test device (`docs/PHASE0_DEVICE_TESTING.md`) : sideload,
       pairing StikDebug, activation JIT, lecture du résultat.
+- [x] **CI verte** : run #2 (commit `7e7b9bf`, 2026-07-18) compile et
+      package `AYS3.ipa` sur runner macOS arm64 GitHub Actions
+      (Xcode 16.2 / iOS SDK 18.2). Run #1 avait échoué — `xcodebuild`
+      cherchait `AYS3iOS.xcodeproj` alors que CMake générait `AYS3.xcodeproj`
+      (le générateur Xcode nomme le projet d'après `project()`, pas
+      d'après la cible) ; corrigé en renommant le projet CMake en
+      `AYS3iOS`. Ça prouve seulement que **ça compile** — pas que le
+      contournement JIT marche.
 - [ ] **Go/no-go réel** : personne n'a encore appuyé sur "Run JIT stub
       probe" sur un iPhone. Tant que ce n'est pas fait, Phase 0 n'est pas
-      validée — seulement écrite. Je n'ai pas de Mac/Xcode dans cet
-      environnement pour compiler moi-même ; la première vraie preuve
-      viendra soit du run CI (compile), soit du test sur device par
-      l'utilisateur (exécute réellement).
+      validée — seulement compilée. Je n'ai pas de Mac/Xcode dans cet
+      environnement pour tester moi-même l'exécution réelle ; ça ne peut
+      venir que d'un test sur device par l'utilisateur
+      (`docs/PHASE0_DEVICE_TESTING.md`).
 
 Je n'ai pas encore lancé le clone de RPCS3 (dépôt lourd, dépendance LLVM,
 build long) — Phase 1 attend que Phase 0 soit vérifiée go sur un vrai
