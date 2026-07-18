@@ -18,7 +18,10 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	message(FATAL_ERROR "AYS3 targets iOS only. Configure with -DCMAKE_SYSTEM_NAME=iOS -G Xcode (see comment above).")
 endif()
 
-project(AYS3 LANGUAGES C CXX Swift)
+# CMake's Xcode generator names the .xcodeproj after the PROJECT name, not
+# the target name — so this must match the add_executable() target below
+# (and what build-ios.yml's xcodebuild -project/-scheme point at).
+project(AYS3iOS LANGUAGES C CXX Swift)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
