@@ -6,11 +6,17 @@ name: LLVM iOS Probe (Phase 1a)
 # RESEARCH.md/PLAN.md for why this is its own isolated milestone before any
 # of RPCS3's actual Emu/Cell code is touched.
 #
-# This is expected to be slow and to need iteration. workflow_dispatch alone
-# doesn't work from a non-default branch (GitHub only lists dispatchable
-# workflows that exist on the default branch) — so this also triggers on
-# push, scoped to its own path so it doesn't run alongside unrelated
-# changes elsewhere in the repo.
+# Two stages, both required (see tools/llvm-ios-probe/CMakeLists.txt):
+#   1. Native (macOS host) build of just llvm-tblgen/llvm-min-tblgen —
+#      TableGen must execute on the build machine even when the resulting
+#      libraries target iOS.
+#   2. The actual iOS cross-build, using Ninja (not Xcode — the Xcode
+#      generator forces app-bundle semantics onto plain CLI executables
+#      like llvm-tblgen, which broke run #1), pointed at stage 1's binaries.
+#
+# Expected to be slow and to need iteration — this is genuinely novel
+# cross-compilation territory (see run history for what's already been
+# ruled out before assuming something is a fresh bug).
 
 on:
   push:
@@ -52,46 +58,63 @@ jobs:
       - name: Install cmake & ninja
         run: brew install cmake ninja
 
-      - name: CMake configure
+      - name: Stage 1 — configure native llvm-tblgen build
         run: |
           cmake \
-            -B "$GITHUB_WORKSPACE/build" \
-            -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -B "$GITHUB_WORKSPACE/build-native" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            "$GITHUB_WORKSPACE/tools/llvm-ios-probe" 2>&1 | tee cmake_output.txt
-          echo '## CMake Output (tail)' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -100 cmake_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -qE 'Configuring incomplete|CMake Error' cmake_output.txt && exit 1 || exit 0
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_ENABLE_WARNINGS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            "$GITHUB_WORKSPACE/external/rpcs3/3rdparty/llvm/llvm/llvm" 2>&1 | tee cmake_native_output.txt
+          grep -qE 'Configuring incomplete|CMake Error' cmake_native_output.txt && exit 1 || exit 0
 
-      - name: Build (xcodebuild)
+      - name: Stage 1 — build llvm-tblgen + llvm-min-tblgen (native)
         run: |
-          set -o pipefail
-          xcodebuild \
-            -project "$GITHUB_WORKSPACE/build/AYS3LLVMiOSProbe.xcodeproj" \
-            -scheme ays3_llvm_probe \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build \
-            2>&1 | tee build.log
-          echo '## Build Output (errors, tail)' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E '(error:|Error:|FAILED|BUILD FAILED)' build.log | tail -150 >> $GITHUB_STEP_SUMMARY || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          cmake --build "$GITHUB_WORKSPACE/build-native" --target llvm-tblgen llvm-min-tblgen -- -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build_native.log
+          ls -la "$GITHUB_WORKSPACE/build-native/bin/"
 
-      - name: Upload build log
+      - name: Stage 2 — configure iOS cross-build (Ninja)
+        run: |
+          cmake \
+            -B "$GITHUB_WORKSPACE/build-ios" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/tools/llvm-ios-probe/ios-ninja-toolchain.cmake" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DLLVM_NATIVE_TOOL_DIR="$GITHUB_WORKSPACE/build-native/bin" \
+            "$GITHUB_WORKSPACE/tools/llvm-ios-probe" 2>&1 | tee cmake_ios_output.txt
+          echo '## CMake iOS configure output (tail)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -150 cmake_ios_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -qE 'Configuring incomplete|CMake Error' cmake_ios_output.txt && exit 1 || exit 0
+
+      - name: Stage 2 — build (Ninja)
+        run: |
+          cmake --build "$GITHUB_WORKSPACE/build-ios" -- -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build_ios.log
+          echo '## iOS build output (errors, tail)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E '(error:|Error:|FAILED)' build_ios.log | tail -150 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          file "$GITHUB_WORKSPACE/build-ios/ays3_llvm_probe" || true
+
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: llvm-ios-probe-logs-${{ github.sha }}
           path: |
-            cmake_output.txt
-            build.log
+            cmake_native_output.txt
+            build_native.log
+            cmake_ios_output.txt
+            build_ios.log
           retention-days: 14

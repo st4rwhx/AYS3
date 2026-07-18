@@ -128,20 +128,43 @@ chemin déjà emprunté par leur propre CMake, pas une invention totale.
   sur Linux/x86_64** contre LLVM 19.1.1 avant d'être poussé (`ays3_probe()
   = 42`) — l'API ORC est donc correcte ; ce qui reste incertain est
   purement la compilation croisée de LLVM lui-même pour iOS.
-- CI dédiée (`llvm-ios-probe.yml`, `workflow_dispatch` manuel, timeout
-  350 min) — déclenchement manuel exprès, pas sur chaque push, vu le coût
-  en temps.
-- **Risque identifié à l'avance, pas encore résolu** : TableGen
-  (`llvm-tblgen`) doit s'exécuter sur la machine hôte (le Mac) pendant le
-  build même quand on compile LLVM pour iOS — un cross-build LLVM correct
-  a besoin d'un `llvm-tblgen` natif séparé (`LLVM_TABLEGEN`). Le premier
-  run ne le configure pas exprès : plutôt que deviner, on lit l'erreur
-  réelle si c'est le point de blocage, et on corrige avec l'information
-  exacte au lieu de complexifier le CMake sur une supposition.
+- CI dédiée (`llvm-ios-probe.yml`, déclenchée sur push scopé à son dossier
+  + `workflow_dispatch`, timeout 350 min).
+
+**Run #1 (2026-07-18) — échec après ~4h30 de config seulement (pas un
+build raté, une vraie découverte) :**
+- `CMake Error ... TableGen.cmake:239 (install): install TARGETS given no
+  BUNDLE DESTINATION for MACOSX_BUNDLE executable target "llvm-tblgen"`.
+- Diagnostic fait en lisant directement le code LLVM vendored (pas deviné) :
+  le générateur **Xcode** force la sémantique "app bundle" sur tout
+  exécutable dès que `CMAKE_SYSTEM_NAME=iOS` — correct pour notre vraie
+  app (Phase 0), mais cassé pour un outil de build interne comme
+  `llvm-tblgen`, qui n'est pas censé être une app iOS du tout.
+- Ce même run confirmait aussi, en le nommant explicitement dans ses logs
+  ("Setting native build dir to .../NATIVE"), le risque anticipé : LLVM
+  sait qu'il doit faire tourner TableGen sur la machine hôte, mais son
+  mécanisme auto (`LLVM_USE_HOST_TOOLS`) réutilise le générateur du build
+  parent (`-G Xcode`) — donc hérite du même problème en cascade.
+- **Correctif appliqué (deux volets, mêmes causes réelles trouvées ci-dessus,
+  pas une supposition) :**
+  1. Le cross-build LLVM passe de `-G Xcode` à **`-G Ninja`** (pas de
+     notion de bundle pour un exécutable simple) — via un toolchain file
+     dédié `tools/llvm-ios-probe/ios-ninja-toolchain.cmake` (SDK iOS
+     résolu via `xcrun`, `CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY`
+     comme tous les toolchains iOS/Android CMake connus). L'app AYS3
+     réelle (Phase 0) reste sur `-G Xcode` — seule la dépendance LLVM
+     change de générateur, ce sont deux configure CMake distincts.
+  2. Un **stage 1 séparé** construit `llvm-tblgen`/`llvm-min-tblgen`
+     nativement (Ninja, host macOS, pas de toolchain iOS) avant le stage 2
+     (cross iOS), qui pointe dessus via `LLVM_NATIVE_TOOL_DIR` — exactement
+     le mécanisme que LLVM documente lui-même pour ce cas
+     (`CrossCompile.cmake`), fait explicitement plutôt que de compter sur
+     l'automatisme qui vient de casser.
+
 - **Go/no-go 1a** : `ays3_llvm_probe` compile et link pour arm64-apple-ios
   en CI. (L'exécution réelle sur device, comme pour la Phase 0, restera
-  une étape séparée — un `.o` iOS ne tourne pas sur le runner macOS qui le
-  compile.)
+  une étape séparée — un binaire iOS ne tourne pas sur le runner macOS qui
+  le compile.)
 
 ### Phase 1b — RPCS3 core compile pour iOS (aucune fonctionnalité encore)
 - Fork `RPCS3/rpcs3` (master, contient déjà PPU+SPU arm64 LLVM) — fait,
