@@ -34,7 +34,15 @@ jobs:
       - name: Install build tools
         run: |
           brew update || true
-          brew install ninja nasm || true
+          brew install ninja nasm ccache || true
+
+      - name: ccache cache (speeds up LLVM/core recompiles across runs)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ays3-ccache-${{ github.sha }}
+          restore-keys: |
+            ays3-ccache-
 
       - name: Run Phase 1 configure spike
         continue-on-error: true

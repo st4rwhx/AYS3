@@ -104,6 +104,7 @@ HOST_TOOLDIR=""
 if [ -d "${LLVM_SRC}" ]; then
   echo "== building host llvm-tblgen / llvm-min-tblgen =="
   cmake -S "${LLVM_SRC}" -B "${WORK}/llvm-native" -G Ninja \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD=AArch64 \
     -DLLVM_ENABLE_PROJECTS="" \
@@ -129,6 +130,7 @@ fi
 #                                  that declare cmake_minimum_required < 3.5
 echo "== arm64-apple-ios configure (the real Phase 1 target) =="
 cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
   -DPLATFORM=OS64 \
   -DDEPLOYMENT_TARGET=16.3 \
