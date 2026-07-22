@@ -62,25 +62,23 @@ if [ ! -f "${TOOLCHAIN}" ]; then
 fi
 [ -f "${TOOLCHAIN}" ] && echo "toolchain: ${TOOLCHAIN} ($(wc -l < "${TOOLCHAIN}") lines)"
 
-# --- 3. macOS-native configure (sanity: does the tree + deps configure at all?)
-echo "== [A] macOS arm64 native configure (sanity) =="
-cmake -S "${RPCS3_DIR}" -B "${WORK}/build-macos" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DUSE_NATIVE_INSTRUCTIONS=OFF \
-  -DUSE_SYSTEM_FFMPEG=OFF \
-  2>&1 | tee "${LOG_DIR}/10-configure-macos.log"
-echo "macOS configure exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/10-configure-macos.log"
-
-# --- 4. iOS arm64 configure (THE spike) ---------------------------------------
-echo "== [B] arm64-apple-ios configure (the real Phase 1 target) =="
+# --- 3. iOS arm64 configure (THE spike) ---------------------------------------
+# Flags explained:
+#   USE_SYSTEM_SDL=OFF          -> build the bundled static SDL3 (system SDL3 is
+#                                  absent and would be a macOS lib anyway)
+#   CMAKE_POLICY_VERSION_MINIMUM -> let CMake 4.x accept old 3rdparty projects
+#                                  that declare cmake_minimum_required < 3.5
+echo "== arm64-apple-ios configure (the real Phase 1 target) =="
 cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
   -DPLATFORM=OS64 \
   -DDEPLOYMENT_TARGET=16.0 \
   -DENABLE_BITCODE=OFF \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
+  -DUSE_SYSTEM_SDL=OFF \
   -DWITH_LLVM=ON \
   2>&1 | tee "${LOG_DIR}/20-configure-ios.log"
 echo "iOS configure exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/20-configure-ios.log"

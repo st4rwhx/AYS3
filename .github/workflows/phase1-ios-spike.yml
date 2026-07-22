@@ -35,9 +35,6 @@ jobs:
         run: |
           brew update || true
           brew install ninja nasm || true
-          # RPCS3's macOS sanity configure needs Qt6; the iOS configure does not
-          # use desktop Qt but installing it lets the [A] sanity step progress.
-          brew install qt@6 || true
 
       - name: Run Phase 1 configure spike
         continue-on-error: true
