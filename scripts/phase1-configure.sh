@@ -80,6 +80,38 @@ patch_rpcs3() {
     sed -i.bak -E 's/-Werror=/-W/g; s/-Werror//g' "${cc}"
     echo "  neutralized -Werror in ConfigureCompiler.cmake"
   fi
+
+  # Wall #10 (THE JIT bring-up): pthread_jit_write_protect_np is
+  # API_UNAVAILABLE(ios) in the SDK header, so every call is a hard "unavailable"
+  # error (132 of them), even though the symbol EXISTS in libSystem at runtime.
+  # Rename RPCS3/asmjit call sites to our own wrapper ays3_jit_wp, defined in a
+  # force-included shim that resolves the real symbol via dlsym (bypassing the
+  # header attribute). On iOS the debugger-enabled JIT region is RWX, so if the
+  # symbol is unavailable the wrapper is a safe no-op.
+  if ! grep -rqs 'ays3_jit_wp' "${RPCS3_DIR}/Utilities/JIT.h" 2>/dev/null; then
+    cat > "${WORK}/ays3_ios_jit_shim.h" <<'SHIM'
+#pragma once
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <dlfcn.h>
+// Real pthread_jit_write_protect_np is marked unavailable for iOS in the SDK
+// header but exists at runtime; reach it via dlsym. RWX JIT (debugger) makes it
+// a no-op when absent.
+static inline int ays3_jit_wp(int enabled) {
+    typedef int (*ays3_jit_wp_fn)(int);
+    static ays3_jit_wp_fn fn = (ays3_jit_wp_fn)dlsym((void*)-2 /*RTLD_DEFAULT*/, "pthread_jit_write_protect_np");
+    return fn ? fn(enabled) : 0;
+}
+#endif
+#endif
+SHIM
+    grep -rlZ 'pthread_jit_write_protect_np' \
+        "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" \
+        --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null \
+      | xargs -0 -r sed -i.bak 's/pthread_jit_write_protect_np/ays3_jit_wp/g'
+    echo "  JIT: shim written + renamed pthread_jit_write_protect_np -> ays3_jit_wp"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
@@ -139,6 +171,8 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_MACOSX_BUNDLE=OFF \
+  -DCMAKE_C_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h" \
+  -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h" \
   -DAYS3_CORE_ONLY=ON \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \

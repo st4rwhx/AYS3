@@ -114,6 +114,26 @@ collected the errors; grouped:
   make-or-break iOS-JIT bring-up, AYS2's specialty). Left in place for now so
   the rest of the core keeps compiling under `ninja -k 0`.
 
+## Wall #10 — the JIT: pthread_jit_write_protect_np unavailable on iOS (build)
+
+- **Where:** JIT.h / JITASM.cpp / JITLLVM.cpp / SPU*Recompiler.cpp / SPUThread.cpp
+  / AArch64JIT.cpp / asmjit virtmem.cpp — 132 hard "unavailable" errors.
+- **Cause:** the SDK header marks `pthread_jit_write_protect_np` as
+  `API_UNAVAILABLE(ios)`, so *using* it is an error even though the symbol
+  exists in libSystem at runtime (it's the W^X toggle used with MAP_JIT).
+- **Fix:** rename call sites to `ays3_jit_wp`, a force-included shim that
+  resolves the real symbol via `dlsym` (bypassing the header attribute). Under
+  the debugger-enabled RWX JIT the toggle isn't strictly needed, so a missing
+  symbol degrades to a safe no-op.
+
+## Remaining batch — desktop audio backends (build, next)
+
+- **cubeb** `cubeb_audiounit.cpp`: uses the macOS CoreAudio HAL
+  (`CoreAudio/AudioHardware.h`, `AudioObjectPropertyAddress`) absent on iOS.
+- **OpenAL** `alc.h` still referenced somewhere despite WITHOUT_OPENAL.
+- `std::ranges::contains` / C++23 range adaptors in a few spots.
+- A headless core needs no audio, so strip these backends (Android-style) next.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports
