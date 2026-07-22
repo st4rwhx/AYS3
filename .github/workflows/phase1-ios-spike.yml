@@ -1,0 +1,67 @@
+name: Phase 1 — RPCS3 iOS toolchain spike
+
+# AYS3 Phase 1: prove how far RPCS3 can be CONFIGURED for arm64-apple-ios.
+# This is a research spike — it is expected to fail somewhere, and the whole
+# point is to capture WHERE. Nothing here is required to pass; the logs are the
+# deliverable. Runs on a real Apple-Silicon macOS runner so we get genuine
+# compiler/toolchain feedback (not a blind Linux cross-attempt).
+
+on:
+  push:
+    branches: ["claude/ays3-phase1-toolchain"]
+    paths:
+      - ".github/workflows/phase1-ios-spike.yml"
+      - "scripts/phase1-configure.sh"
+      - "cmake/**"
+  workflow_dispatch:
+
+jobs:
+  configure-spike:
+    runs-on: macos-14   # Apple Silicon (arm64)
+    timeout-minutes: 90
+    steps:
+      - name: Checkout AYS3
+        uses: actions/checkout@v4
+
+      - name: Show runner environment
+        run: |
+          sw_vers || true
+          uname -a
+          sysctl -n hw.memsize | awk '{printf "RAM: %.1f GB\n", $1/1024/1024/1024}'
+          cmake --version || true
+          xcodebuild -version || true
+
+      - name: Install build tools
+        run: |
+          brew update || true
+          brew install ninja nasm || true
+          # RPCS3's macOS sanity configure needs Qt6; the iOS configure does not
+          # use desktop Qt but installing it lets the [A] sanity step progress.
+          brew install qt@6 || true
+
+      - name: Run Phase 1 configure spike
+        continue-on-error: true
+        env:
+          RPCS3_REF: master
+          IOS_CMAKE_REF: "4.5.0"
+        run: |
+          chmod +x scripts/phase1-configure.sh
+          ./scripts/phase1-configure.sh
+
+      - name: Summarize walls
+        if: always()
+        run: |
+          echo "### Phase 1 spike summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat spike-logs/01-rpcs3-sha.txt 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+          echo "--- first iOS-configure errors ---" >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "error|fatal|not found|required|CMake Error" spike-logs/20-configure-ios.log 2>/dev/null | head -40 >> "$GITHUB_STEP_SUMMARY" || echo "(no ios log)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload spike logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-spike-logs
+          path: spike-logs/
+          if-no-files-found: warn

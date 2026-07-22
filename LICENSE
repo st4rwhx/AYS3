@@ -1,0 +1,13 @@
+AYS3 is licensed under the GNU General Public License, version 2.0 only
+(GPL-2.0-only), matching the license of RPCS3, from which it derives.
+
+SPDX-License-Identifier: GPL-2.0-only
+
+The full text of the GNU General Public License version 2 is available at:
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+This project must NOT be linked or combined into a single binary with
+GPL-3.0-licensed code (e.g. PCSX2 / the AYS2 PS2 app): GPL-2.0-only and
+GPL-3.0 are mutually incompatible. AYS3 is therefore a separate application
+and binary. Any UI or helper concepts inspired by AYS2 are re-implemented
+here from scratch, never imported from GPL-3.0 sources.
