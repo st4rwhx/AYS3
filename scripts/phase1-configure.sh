@@ -123,10 +123,27 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DUSE_SYSTEM_CURL=OFF \
   -DWITH_LLVM=ON \
   -DBUILD_LLVM=ON \
+  -DLLVM_TARGETS_TO_BUILD=AArch64 \
   ${HOST_TOOLDIR:+-DLLVM_NATIVE_TOOL_DIR=${HOST_TOOLDIR}} \
   ${HOST_TOOLDIR:+-DLLVM_TABLEGEN=${HOST_TOOLDIR}/llvm-tblgen} \
   2>&1 | tee "${LOG_DIR}/20-configure-ios.log"
-echo "iOS configure exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/20-configure-ios.log"
+IOS_CFG_EXIT=${PIPESTATUS[0]}
+echo "iOS configure exit: ${IOS_CFG_EXIT}" | tee -a "${LOG_DIR}/20-configure-ios.log"
+
+# --- 4. iOS core build (collect ALL compile errors in one pass) ---------------
+# Configure succeeded, so compile the Emu core with `ninja -k 0` (keep going
+# past errors) to gather the FULL list of build failures at once instead of one
+# at a time. LLVM (AArch64 only) compiles first, then rpcs3_emu. Long build.
+if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
+  echo "== building rpcs3_emu core for iOS (ninja -k 0) =="
+  ninja -C "${WORK}/build-ios" -k 0 -j3 rpcs3_emu \
+    2>&1 | tee "${LOG_DIR}/30-build-ios.log"
+  echo "iOS build exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/30-build-ios.log"
+  echo "== compile error summary =="
+  grep -iE "error:|fatal error|ld: |undefined symbol|ninja: build stopped" "${LOG_DIR}/30-build-ios.log" | head -80 || true
+else
+  echo "iOS configure did not succeed (exit ${IOS_CFG_EXIT}); skipping build."
+fi
 
 echo "== Phase 1 spike done. Logs in ${LOG_DIR}. =="
 echo "First iOS-configure error lines:"
