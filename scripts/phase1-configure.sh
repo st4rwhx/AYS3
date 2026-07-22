@@ -80,6 +80,7 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DUSE_SYSTEM_FFMPEG=OFF \
   -DUSE_SYSTEM_SDL=OFF \
   -DWITH_LLVM=ON \
+  -DBUILD_LLVM=ON \
   2>&1 | tee "${LOG_DIR}/20-configure-ios.log"
 echo "iOS configure exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/20-configure-ios.log"
 

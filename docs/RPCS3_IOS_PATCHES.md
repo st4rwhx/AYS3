@@ -37,6 +37,18 @@ change that clears it. Patches are applied in `scripts/phase1-configure.sh`
   subprojects declaring `cmake_minimum_required(VERSION < 3.5)`.
 - **Fix:** `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` globally.
 
+## Wall #4 — LLVM not found (configure)
+
+- **Where:** `3rdparty/llvm/CMakeLists.txt:69` → `FATAL_ERROR "Can't find LLVM
+  libraries..."` after `Could NOT find LLVM (missing: LLVM_DIR)`.
+- **Cause:** `BUILD_LLVM` defaults OFF, so RPCS3 looks for a prebuilt/system
+  LLVM (none exists for iOS).
+- **Fix:** `-DBUILD_LLVM=ON` → build LLVM from the bundled submodule
+  (`3rdparty/llvm/llvm`, targets `AArch64;X86`).
+- **Watch next:** cross-compiling LLVM for iOS typically needs a **native
+  `llvm-tblgen`** (host tool) via `-DLLVM_TABLEGEN=...`. If the LLVM subproject
+  configure demands native tools, add a host-tblgen pre-build step.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports
