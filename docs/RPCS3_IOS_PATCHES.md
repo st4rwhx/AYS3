@@ -49,6 +49,27 @@ change that clears it. Patches are applied in `scripts/phase1-configure.sh`
   `llvm-tblgen`** (host tool) via `-DLLVM_TABLEGEN=...`. If the LLVM subproject
   configure demands native tools, add a host-tblgen pre-build step.
 
+## Wall #5 — LLVM cross-compile needs native tblgen (configure)
+
+- **Where:** `3rdparty/llvm/llvm/llvm/cmake/modules/TableGen.cmake:239` →
+  `install TARGETS given no BUNDLE DESTINATION for MACOSX_BUNDLE executable
+  target "llvm-tblgen"`.
+- **Cause:** cross-compiling LLVM auto-starts a NATIVE sub-build, but under the
+  iOS toolchain it inherits `CMAKE_MACOSX_BUNDLE=ON`, so llvm-tblgen's install
+  rule wants a bundle destination.
+- **Fix:** build `llvm-tblgen`/`llvm-min-tblgen` natively (host macOS) in a
+  separate step, then pass `-DLLVM_NATIVE_TOOL_DIR=<bin>` and
+  `-DLLVM_TABLEGEN=<bin>/llvm-tblgen` so the iOS build uses the prebuilt host
+  tools instead of trying to build+install them in the iOS tree.
+
+## Wall #6 — CURL not found (configure)
+
+- **Where:** `3rdparty/curl/CMakeLists.txt:5` → `Could NOT find CURL`.
+- **Cause:** `USE_SYSTEM_CURL` defaults ON → `find_package(CURL REQUIRED)`; no
+  system libcurl for iOS.
+- **Fix:** `-DUSE_SYSTEM_CURL=OFF` → RPCS3 builds bundled libcurl + WolfSSL
+  statically (HTTP-only), which supports iOS.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

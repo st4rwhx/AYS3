@@ -62,6 +62,34 @@ if [ ! -f "${TOOLCHAIN}" ]; then
 fi
 [ -f "${TOOLCHAIN}" ] && echo "toolchain: ${TOOLCHAIN} ($(wc -l < "${TOOLCHAIN}") lines)"
 
+# --- 2b. Host llvm-tblgen (cross-compiling LLVM to iOS needs native tools) -----
+# When BUILD_LLVM cross-compiles LLVM for iOS, the table-gen tools must run on
+# the build host. LLVM auto-starts a NATIVE sub-build, but under the iOS
+# toolchain that sub-build inherits CMAKE_MACOSX_BUNDLE=ON and its llvm-tblgen
+# install() fatals ("no BUNDLE DESTINATION"). Build the tblgens natively here
+# and point the iOS configure at them via LLVM_NATIVE_TOOL_DIR/LLVM_TABLEGEN.
+LLVM_SRC="${RPCS3_DIR}/3rdparty/llvm/llvm/llvm"
+HOST_TOOLDIR=""
+if [ -d "${LLVM_SRC}" ]; then
+  echo "== building host llvm-tblgen / llvm-min-tblgen =="
+  cmake -S "${LLVM_SRC}" -B "${WORK}/llvm-native" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD=AArch64 \
+    -DLLVM_ENABLE_PROJECTS="" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    2>&1 | tee "${LOG_DIR}/15-llvm-native-configure.log"
+  cmake --build "${WORK}/llvm-native" --target llvm-tblgen llvm-min-tblgen -j3 \
+    2>&1 | tee "${LOG_DIR}/16-llvm-native-build.log" || \
+  cmake --build "${WORK}/llvm-native" --target llvm-tblgen -j3 \
+    2>&1 | tee -a "${LOG_DIR}/16-llvm-native-build.log"
+  if [ -x "${WORK}/llvm-native/bin/llvm-tblgen" ]; then
+    HOST_TOOLDIR="${WORK}/llvm-native/bin"
+    echo "host tools: ${HOST_TOOLDIR} ($(ls "${HOST_TOOLDIR}" | tr '\n' ' '))"
+  else
+    echo "host tblgen build FAILED — iOS LLVM configure will likely still hit the tblgen wall"
+  fi
+fi
+
 # --- 3. iOS arm64 configure (THE spike) ---------------------------------------
 # Flags explained:
 #   USE_SYSTEM_SDL=OFF          -> build the bundled static SDL3 (system SDL3 is
@@ -79,8 +107,11 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
   -DUSE_SYSTEM_SDL=OFF \
+  -DUSE_SYSTEM_CURL=OFF \
   -DWITH_LLVM=ON \
   -DBUILD_LLVM=ON \
+  ${HOST_TOOLDIR:+-DLLVM_NATIVE_TOOL_DIR=${HOST_TOOLDIR}} \
+  ${HOST_TOOLDIR:+-DLLVM_TABLEGEN=${HOST_TOOLDIR}/llvm-tblgen} \
   2>&1 | tee "${LOG_DIR}/20-configure-ios.log"
 echo "iOS configure exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/20-configure-ios.log"
 
