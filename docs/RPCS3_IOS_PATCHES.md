@@ -70,6 +70,32 @@ change that clears it. Patches are applied in `scripts/phase1-configure.sh`
 - **Fix:** `-DUSE_SYSTEM_CURL=OFF` → RPCS3 builds bundled libcurl + WolfSSL
   statically (HTTP-only), which supports iOS.
 
+## Wall #5b — llvm-tblgen MACOSX_BUNDLE install (configure)
+
+- **Symptom persisted** even with `LLVM_NATIVE_TOOL_DIR`/`LLVM_TABLEGEN`: LLVM
+  still declared the tblgen target and its install rule fataled under
+  `MACOSX_BUNDLE`.
+- **Root cause:** `ios.toolchain.cmake` only sets `CMAKE_MACOSX_BUNDLE=YES`
+  `if (NOT DEFINED CMAKE_MACOSX_BUNDLE)`.
+- **Fix:** pass `-DCMAKE_MACOSX_BUNDLE=OFF` (we build a static core lib, not a
+  desktop `.app`; the real iOS app target sets bundling itself later).
+
+## Wall #7 (strategic) — RPCS3 is a monolithic Qt app; build the core only
+
+- **Where:** `3rdparty/qt6.cmake:47` → `FATAL_ERROR` "You need Qt6 installed"
+  (there is no Qt6 for iOS), reached via `rpcs3/CMakeLists.txt` including
+  `qt6.cmake`.
+- **Key insight:** RPCS3 already ships a **Qt-less path — the Android build**.
+  `rpcs3/CMakeLists.txt` guards the Qt include, the `rpcs3qt` frontend, and the
+  desktop executable behind `if (NOT ANDROID)`, while `add_subdirectory(Emu)`
+  (the `rpcs3_emu` core) is always built.
+- **Fix / strategy:** gate those same three blocks on `AYS3_CORE_ONLY` too
+  (`if (NOT ANDROID AND NOT AYS3_CORE_ONLY)`) and pass `-DAYS3_CORE_ONLY=ON`, so
+  iOS configures/builds **only the Emu core** — exactly like Android. AYS3
+  provides its own Swift UI on top; the Qt desktop frontend is never used on
+  iOS. This is both the correct architecture and a big speed-up (no Qt, no
+  frontend to fight or compile).
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

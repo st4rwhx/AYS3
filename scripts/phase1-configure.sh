@@ -49,6 +49,17 @@ patch_rpcs3() {
     sed -i.bak 's/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")/' "${osc}"
     echo "  patched libusb/os.cmake for iOS: $(grep -c 'STREQUAL "iOS"' "${osc}") hit(s)"
   fi
+
+  # Wall #7 (strategic): RPCS3 is a monolithic Qt desktop app. Its rpcs3/
+  # CMakeLists guards Qt + the rpcs3qt frontend + the desktop executable behind
+  # `if (NOT ANDROID)`. iOS wants the SAME Qt-less core-only path Android uses.
+  # Gate those three blocks on our AYS3_CORE_ONLY flag too, so only the Emu core
+  # (rpcs3_emu) is configured — we ship our own Swift UI on top, never Qt.
+  local rc="${RPCS3_DIR}/rpcs3/CMakeLists.txt"
+  if [ -f "${rc}" ] && ! grep -q 'AYS3_CORE_ONLY' "${rc}"; then
+    sed -i.bak 's/if (NOT ANDROID)/if (NOT ANDROID AND NOT AYS3_CORE_ONLY)/g' "${rc}"
+    echo "  patched rpcs3/CMakeLists.txt core-only gates: $(grep -c 'AYS3_CORE_ONLY' "${rc}") hit(s)"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
@@ -104,6 +115,8 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DENABLE_BITCODE=OFF \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_MACOSX_BUNDLE=OFF \
+  -DAYS3_CORE_ONLY=ON \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
   -DUSE_SYSTEM_SDL=OFF \
