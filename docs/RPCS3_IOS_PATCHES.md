@@ -96,6 +96,24 @@ change that clears it. Patches are applied in `scripts/phase1-configure.sh`
   iOS. This is both the correct architecture and a big speed-up (no Qt, no
   frontend to fight or compile).
 
+## Build phase — LLVM (arm64) compiled; core-compile errors, batched
+
+LLVM cross-compiled fully; the build reached the RPCS3 Emu core. `ninja -k 0`
+collected the errors; grouped:
+
+- **-Werror (return-type, implicit-fallthrough)** in PPUDisAsm/SPUThread/atomic/
+  bin_patch → neutralize `-Werror` in `buildfiles/cmake/ConfigureCompiler.cmake`.
+- **`std::to_chars` unavailable (iOS 16.3)** in Config.cpp → bump
+  `DEPLOYMENT_TARGET` 16.0 → 16.3.
+- **`std::ranges::views::join` missing** (openal-soft) → skip OpenAL on iOS
+  (define WITHOUT_OPENAL like Android); headless core needs no audio.
+- **`vulkan/vulkan.h` not found** (RSX/VK) → `USE_VULKAN=OFF` for this milestone
+  (Null renderer); rendering re-added later with proper Vulkan-Headers include.
+- **`pthread_jit_write_protect_np` unavailable on iOS** (JIT.h / JITASM.cpp /
+  JITLLVM.cpp) → **the JIT W^X wall**, handled deliberately next (this is the
+  make-or-break iOS-JIT bring-up, AYS2's specialty). Left in place for now so
+  the rest of the core keeps compiling under `ninja -k 0`.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

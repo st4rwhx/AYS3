@@ -60,6 +60,26 @@ patch_rpcs3() {
     sed -i.bak 's/if (NOT ANDROID)/if (NOT ANDROID AND NOT AYS3_CORE_ONLY)/g' "${rc}"
     echo "  patched rpcs3/CMakeLists.txt core-only gates: $(grep -c 'AYS3_CORE_ONLY' "${rc}") hit(s)"
   fi
+
+  # Wall #8: skip OpenAL on iOS. openal-soft uses C++23 std::ranges::views::join
+  # (absent here) and a headless core needs no audio. The only bare
+  # `if (NOT ANDROID)` (with space) in 3rdparty/CMakeLists.txt is the OpenAL
+  # block; gating it on AYS3_CORE_ONLY makes iOS take the else branch that
+  # defines WITHOUT_OPENAL — exactly what Android does.
+  local tp="${RPCS3_DIR}/3rdparty/CMakeLists.txt"
+  if [ -f "${tp}" ] && ! grep -q 'AYS3_CORE_ONLY' "${tp}"; then
+    sed -i.bak 's/if (NOT ANDROID)/if (NOT ANDROID AND NOT AYS3_CORE_ONLY)/g' "${tp}"
+    echo "  patched 3rdparty/CMakeLists.txt (OpenAL skip): $(grep -c 'AYS3_CORE_ONLY' "${tp}") hit(s)"
+  fi
+
+  # Wall #9: RPCS3 builds with -Werror; iOS-only warnings (return-type,
+  # implicit-fallthrough) become fatal. Downgrade -Werror=* to plain -W* and drop
+  # bare -Werror so warnings don't stop the build.
+  local cc="${RPCS3_DIR}/buildfiles/cmake/ConfigureCompiler.cmake"
+  if [ -f "${cc}" ] && grep -q 'Werror' "${cc}"; then
+    sed -i.bak -E 's/-Werror=/-W/g; s/-Werror//g' "${cc}"
+    echo "  neutralized -Werror in ConfigureCompiler.cmake"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
@@ -111,8 +131,9 @@ echo "== arm64-apple-ios configure (the real Phase 1 target) =="
 cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
   -DPLATFORM=OS64 \
-  -DDEPLOYMENT_TARGET=16.0 \
+  -DDEPLOYMENT_TARGET=16.3 \
   -DENABLE_BITCODE=OFF \
+  -DUSE_VULKAN=OFF \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_MACOSX_BUNDLE=OFF \
