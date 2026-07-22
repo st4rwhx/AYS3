@@ -34,6 +34,24 @@ fi
 RPCS3_SHA="$(git -C "${RPCS3_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "RPCS3 pinned at: ${RPCS3_SHA}" | tee "${LOG_DIR}/01-rpcs3-sha.txt"
 
+# --- 1b. iOS patches (idempotent) ---------------------------------------------
+# Each patch clears one configure wall found by a previous spike run. Kept as
+# small in-place edits (robust against RPCS3 master drift) rather than fragile
+# patch files. Documented in docs/RPCS3_IOS_PATCHES.md.
+patch_rpcs3() {
+  echo "== applying iOS patches to RPCS3 tree =="
+
+  # Wall #1: 3rdparty/libusb/os.cmake rejects iOS. The Apple branch only fills
+  # PLATFORM_SRC when CMAKE_SYSTEM_NAME == "Darwin"; the iOS toolchain sets it to
+  # "iOS". Let iOS reuse the Darwin/IOKit backend so configure proceeds.
+  local osc="${RPCS3_DIR}/3rdparty/libusb/os.cmake"
+  if [ -f "${osc}" ] && ! grep -q 'STREQUAL "iOS"' "${osc}"; then
+    sed -i.bak 's/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")/' "${osc}"
+    echo "  patched libusb/os.cmake for iOS: $(grep -c 'STREQUAL "iOS"' "${osc}") hit(s)"
+  fi
+}
+patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
+
 # --- 2. iOS CMake toolchain (leetal/ios-cmake) --------------------------------
 mkdir -p "$(dirname "${TOOLCHAIN}")"
 if [ ! -f "${TOOLCHAIN}" ]; then
