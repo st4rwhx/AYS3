@@ -126,7 +126,17 @@ collected the errors; grouped:
   the debugger-enabled RWX JIT the toggle isn't strictly needed, so a missing
   symbol degrades to a safe no-op.
 
-## Remaining batch — desktop audio backends (build, next)
+## Wall #11 — desktop audio backends (build)
+
+- **cubeb** `cubeb_audiounit.c` uses the macOS CoreAudio HAL
+  (`CoreAudio/AudioHardware.h`, `AudioObjectPropertyAddress`) absent on iOS →
+  `-DUSE_AUDIOUNIT=OFF` so the bundled cubeb builds without the desktop backend
+  (null output — fine for a headless core).
+- **FAudio** not needed headless → `-DUSE_FAUDIO=OFF`.
+- **OpenAL `alc.h`**: still referenced by some RPCS3 file after WITHOUT_OPENAL;
+  pin the exact includer from the next build log and guard it.
+
+## Superseded / notes
 
 - **cubeb** `cubeb_audiounit.cpp`: uses the macOS CoreAudio HAL
   (`CoreAudio/AudioHardware.h`, `AudioObjectPropertyAddress`) absent on iOS.
