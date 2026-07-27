@@ -100,7 +100,14 @@ patch_rpcs3() {
 // a no-op when absent.
 static inline int ays3_jit_wp(int enabled) {
     typedef int (*ays3_jit_wp_fn)(int);
-    static ays3_jit_wp_fn fn = (ays3_jit_wp_fn)dlsym((void*)-2 /*RTLD_DEFAULT*/, "pthread_jit_write_protect_np");
+    /* C requires a compile-time-constant initializer for a static local, so
+       resolve lazily (valid in both C and C++). */
+    static ays3_jit_wp_fn fn = 0;
+    static int resolved = 0;
+    if (!resolved) {
+        fn = (ays3_jit_wp_fn)dlsym((void*)-2 /*RTLD_DEFAULT*/, "pthread_jit_write_protect_np");
+        resolved = 1;
+    }
     return fn ? fn(enabled) : 0;
 }
 #endif
