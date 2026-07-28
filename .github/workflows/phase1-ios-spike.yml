@@ -17,7 +17,7 @@ on:
 
 jobs:
   configure-spike:
-    runs-on: macos-14   # Apple Silicon (arm64)
+    runs-on: macos-15   # Apple Silicon (arm64) — Xcode 16 / newer libc++ for C++20/23 ranges
     timeout-minutes: 180
     steps:
       - name: Checkout AYS3

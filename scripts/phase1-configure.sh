@@ -123,6 +123,14 @@ SHIM
     done
     echo "  JIT: shim written + renamed in $(grep -rl 'ays3_jit_wp' "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null | wc -l | tr -d ' ') file(s)"
   fi
+
+  # Wall #12: cellMic.h includes "alc.h" unconditionally even though its OpenAL
+  # usage is guarded by WITHOUT_OPENAL (set on iOS). Guard the include too.
+  local mic="${RPCS3_DIR}/rpcs3/Emu/Cell/Modules/cellMic.h"
+  if [ -f "${mic}" ] && grep -q '^#include "alc.h"' "${mic}"; then
+    perl -i -pe 's{^#include "alc\.h"$}{#ifndef WITHOUT_OPENAL\n#include "alc.h"\n#endif}' "${mic}"
+    echo "  guarded alc.h include in cellMic.h"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
