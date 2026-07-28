@@ -113,11 +113,15 @@ static inline int ays3_jit_wp(int enabled) {
 #endif
 #endif
 SHIM
-    grep -rlZ 'pthread_jit_write_protect_np' \
+    # NOTE: macOS xargs has no -r (GNU-only); a for-loop over `grep -rl` is
+    # portable. RPCS3 paths contain no spaces.
+    local jf
+    for jf in $(grep -rl 'pthread_jit_write_protect_np' \
         "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" \
-        --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null \
-      | xargs -0 -r sed -i.bak 's/pthread_jit_write_protect_np/ays3_jit_wp/g'
-    echo "  JIT: shim written + renamed pthread_jit_write_protect_np -> ays3_jit_wp"
+        --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null); do
+      sed -i.bak 's/pthread_jit_write_protect_np/ays3_jit_wp/g' "${jf}"
+    done
+    echo "  JIT: shim written + renamed in $(grep -rl 'ays3_jit_wp' "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null | wc -l | tr -d ' ') file(s)"
   fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
