@@ -141,6 +141,27 @@ SHIM
     perl -0pi -e 's/\A/\/\/ AYS3_ICACHE_SHIM\n#if defined(__APPLE__)\n#include <libkern\/OSCacheControl.h>\n#endif\n/' "${vm}"
     echo "  asmjit virtmem: added OSCacheControl.h"
   fi
+
+  # Phase 2: a link probe target that force-loads librpcs3_emu.a so the linker
+  # must resolve ALL core symbols on iOS (surfaces deferred undefined deps).
+  local rc2="${RPCS3_DIR}/rpcs3/CMakeLists.txt"
+  if [ -f "${rc2}" ] && ! grep -q 'ays3_probe' "${rc2}"; then
+    cat > "${RPCS3_DIR}/rpcs3/ays3_probe.cpp" <<'PROBE'
+#include <cstdio>
+// Force-loaded against librpcs3_emu.a; entry point just proves the core links.
+int main() { std::printf("AYS3 probe: rpcs3_emu linked for iOS\n"); return 0; }
+PROBE
+    cat >> "${rc2}" <<'CM'
+
+# AYS3 Phase 2 link probe (added by scripts/phase1-configure.sh)
+if(AYS3_PROBE)
+    add_executable(ays3_probe ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp)
+    target_link_libraries(ays3_probe PRIVATE rpcs3_emu)
+    target_link_options(ays3_probe PRIVATE "SHELL:-Wl,-force_load,$<TARGET_FILE:rpcs3_emu>")
+endif()
+CM
+    echo "  Phase 2: added ays3_probe link target"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
@@ -205,6 +226,7 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_C_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h" \
   -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include/AL" \
   -DAYS3_CORE_ONLY=ON \
+  -DAYS3_PROBE=ON \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
   -DUSE_SYSTEM_SDL=OFF \
@@ -229,6 +251,18 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
   echo "iOS build exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/30-build-ios.log"
   echo "== compile error summary =="
   grep -iE "error:|fatal error|ld: |undefined symbol|ninja: build stopped" "${LOG_DIR}/30-build-ios.log" | head -80 || true
+
+  # --- 5. Phase 2 link probe: force-load rpcs3_emu into an iOS executable so
+  # the linker must resolve EVERY core symbol (surfaces the deferred undefined
+  # deps like the null libusb backend). "Does the core LINK on iOS?" de-risk.
+  if [ -f "${WORK}/build-ios/rpcs3/Emu/librpcs3_emu.a" ]; then
+    echo "== linking ays3_probe (force_load rpcs3_emu) =="
+    ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_probe \
+      2>&1 | tee "${LOG_DIR}/40-link-probe.log"
+    echo "probe link exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/40-link-probe.log"
+    echo "== undefined symbols (unique) =="
+    grep -oE "\"[^\"]+\", referenced from|Undefined symbols|ld: symbol.*not found|undefined symbol: .*" "${LOG_DIR}/40-link-probe.log" | sort -u | head -60 || true
+  fi
 else
   echo "iOS configure did not succeed (exit ${IOS_CFG_EXIT}); skipping build."
 fi
