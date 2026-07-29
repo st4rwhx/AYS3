@@ -144,6 +144,34 @@ collected the errors; grouped:
 - `std::ranges::contains` / C++23 range adaptors in a few spots.
 - A headless core needs no audio, so strip these backends (Android-style) next.
 
+## Wall #14 — bundled ffmpeg is prebuilt for macOS (Phase 2 link)
+
+- **Where:** probe link → `ld: building for 'iOS', but linking in object file
+  (.spike/build-ios/3rdparty/ffmpeg/lib/libavformat.a[arm64][2](aacdec.o)) built
+  for 'macOS'`.
+- **Cause:** RPCS3's builtin ffmpeg is the **`RPCS3/ffmpeg-core`** submodule. Its
+  `CMakeLists.txt` DOWNLOADS a prebuilt zip per host (`ffmpeg-macos-arm64.zip` on
+  Apple Silicon) and extracts the `.a` to `${CMAKE_BINARY_DIR}/3rdparty/ffmpeg/lib`;
+  RPCS3's `3rdparty/CMakeLists.txt` then `find_library()`s
+  `avformat/avcodec/avutil/swscale/swresample` there. Those objects are **macOS**,
+  not iOS → the iOS probe can't link them. (ffmpeg-core is ffmpeg 8.0 —
+  `LIBAVCODEC_VERSION_MAJOR 62`.)
+- **Key insight:** RPCS3 only calls ffmpeg's **stable public C API**
+  (`avcodec_*`/`avformat_*`/`sws_*`/`swr_*`), which is present in the libraries
+  regardless of which codecs/demuxers are compiled in. So a **minimal,
+  self-contained iOS static ffmpeg** supplies every symbol the core references —
+  no need to reproduce ffmpeg-core's full codec set for a *link/boot* milestone.
+- **Fix:** cross-compile ffmpeg 8.0 for `arm64-apple-ios` in the spike
+  (`--enable-cross-compile --target-os=darwin --arch=arm64` + iphoneos
+  clang/sysroot, `--disable-asm` to drop cross-assembler risk, Apple-framework
+  backends disabled so the `.a` stay self-contained), then **swap** our 5 iOS
+  `.a` over the extracted macOS ones in `build-ios/3rdparty/ffmpeg/lib` right
+  before the `ninja ays3_probe` link (same filenames → the resolved link paths
+  are reused). The core's ffmpeg-using files already compiled fine against the
+  committed headers, so only the libraries need replacing.
+- **Later:** re-enable the specific decoders cellVdec/ATRAC need (M2V/AVC, etc.)
+  once we're past headless boot — trivial config change, more build time.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

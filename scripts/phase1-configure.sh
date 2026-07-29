@@ -188,6 +188,65 @@ if [ ! -f "${STUBLIBS}/librt.a" ]; then
   ar rcs "${STUBLIBS}/librt.a" "${STUBLIBS}/rt.o" && echo "stub librt.a created"
 fi
 
+# --- 2d. Cross-compile FFmpeg for arm64-apple-ios -----------------------------
+# Wall #14: RPCS3's bundled ffmpeg is the `RPCS3/ffmpeg-core` submodule, which
+# DOWNLOADS a prebuilt zip per host (`ffmpeg-macos-arm64.zip` on Apple Silicon)
+# and RPCS3 links libav{format,codec,util},libsw{scale,resample} from it. Those
+# objects are built for macOS, so the probe link fails: "building for 'iOS', but
+# linking in object file built for 'macOS'". RPCS3 only calls ffmpeg's stable
+# PUBLIC C API (avcodec_*/avformat_*/sws_*/swr_*), which is present regardless of
+# which codecs are compiled in — so a minimal, self-contained iOS static build
+# provides every symbol RPCS3 needs. We build ffmpeg 8.0 (matches ffmpeg-core:
+# LIBAVCODEC_VERSION_MAJOR 62) and later swap our .a over the extracted macOS
+# ones. asm is disabled: this milestone is LINK/boot, not decode perf, and it
+# removes all cross-assembler risk. Apple-framework backends are disabled so the
+# static libs stay self-contained (no VideoToolbox/CoreImage/etc. link deps).
+FFMPEG_IOS="${WORK}/ffmpeg-ios"     # install prefix (lib/ + include/)
+FFMPEG_SRC="${WORK}/ffmpeg-src"
+FFMPEG_REF="${FFMPEG_REF:-n8.0}"
+if [ ! -f "${FFMPEG_IOS}/lib/libavcodec.a" ]; then
+  echo "== cross-compiling ffmpeg ${FFMPEG_REF} for arm64-apple-ios =="
+  if [ ! -d "${FFMPEG_SRC}/.git" ]; then
+    git clone --depth 1 --branch "${FFMPEG_REF}" \
+      https://github.com/FFmpeg/FFmpeg "${FFMPEG_SRC}" \
+      2>&1 | tee "${LOG_DIR}/17-ffmpeg-clone.log" || echo "ffmpeg clone FAILED"
+  fi
+  if [ -d "${FFMPEG_SRC}" ]; then
+    IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+    ( cd "${FFMPEG_SRC}" && \
+      ./configure \
+        --prefix="${FFMPEG_IOS}" \
+        --enable-cross-compile \
+        --target-os=darwin \
+        --arch=arm64 \
+        --sysroot="${IOS_SDK}" \
+        --cc="xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.3" \
+        --as="xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.3" \
+        --ar="xcrun --sdk iphoneos ar" \
+        --ranlib="xcrun --sdk iphoneos ranlib" \
+        --extra-cflags="-arch arm64 -miphoneos-version-min=16.3 -fno-common" \
+        --extra-ldflags="-arch arm64 -miphoneos-version-min=16.3" \
+        --enable-static --disable-shared --enable-pic \
+        --disable-asm \
+        --disable-programs --disable-doc --disable-debug \
+        --disable-network --disable-autodetect --disable-everything \
+        --disable-videotoolbox --disable-audiotoolbox --disable-avfoundation \
+        --disable-coreimage --disable-securetransport --disable-metal \
+        --disable-iconv --disable-sdl2 --disable-zlib --disable-bzlib \
+        --disable-lzma --disable-xlib \
+      2>&1 | tee "${LOG_DIR}/18-ffmpeg-configure.log" ) || echo "ffmpeg configure FAILED"
+    make -C "${FFMPEG_SRC}" -j3 2>&1 | tee "${LOG_DIR}/19-ffmpeg-build.log" \
+      && make -C "${FFMPEG_SRC}" install 2>&1 | tee -a "${LOG_DIR}/19-ffmpeg-build.log" \
+      || echo "ffmpeg build/install FAILED"
+  fi
+fi
+if [ -f "${FFMPEG_IOS}/lib/libavcodec.a" ]; then
+  echo "ffmpeg-ios libs: $(ls "${FFMPEG_IOS}/lib"/*.a | tr '\n' ' ')"
+  xcrun lipo -info "${FFMPEG_IOS}/lib/libavcodec.a" || true
+else
+  echo "ffmpeg-ios build ABSENT — probe will still hit the macOS-ffmpeg wall"
+fi
+
 # --- 2b. Host llvm-tblgen (cross-compiling LLVM to iOS needs native tools) -----
 # When BUILD_LLVM cross-compiles LLVM for iOS, the table-gen tools must run on
 # the build host. LLVM auto-starts a NATIVE sub-build, but under the iOS
@@ -278,6 +337,25 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
   # the linker must resolve EVERY core symbol (surfaces the deferred undefined
   # deps like the null libusb backend). "Does the core LINK on iOS?" de-risk.
   if [ -f "${WORK}/build-ios/rpcs3/Emu/librpcs3_emu.a" ]; then
+    # Wall #14 swap: RPCS3's configure extracted the prebuilt *macOS* ffmpeg into
+    # build-ios/3rdparty/ffmpeg/lib (that's the path find_library() resolved and
+    # ninja will link). Overwrite those 5 .a with our arm64-iOS cross-build so the
+    # probe links iOS objects. Same filenames → the resolved link paths are reused.
+    FF_DST="${WORK}/build-ios/3rdparty/ffmpeg/lib"
+    if [ -f "${FFMPEG_IOS}/lib/libavcodec.a" ] && [ -d "${FF_DST}" ]; then
+      echo "== swapping macOS ffmpeg → iOS ffmpeg in ${FF_DST} =="
+      for l in libavformat libavcodec libavutil libswscale libswresample; do
+        if [ -f "${FFMPEG_IOS}/lib/${l}.a" ]; then
+          cp -f "${FFMPEG_IOS}/lib/${l}.a" "${FF_DST}/${l}.a"
+          echo "  swapped ${l}.a -> $(xcrun lipo -archs "${FF_DST}/${l}.a" 2>/dev/null)"
+        else
+          echo "  WARN: ${l}.a missing from iOS build"
+        fi
+      done
+    else
+      echo "== ffmpeg swap SKIPPED (iOS libs or dst dir absent) =="
+    fi
+
     echo "== linking ays3_probe (force_load rpcs3_emu) =="
     ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_probe \
       2>&1 | tee "${LOG_DIR}/40-link-probe.log"
