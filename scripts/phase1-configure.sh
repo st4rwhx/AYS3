@@ -132,9 +132,13 @@ SHIM
   # Wall #13: asmjit's virtmem.cpp calls sys_icache_invalidate but doesn't pull
   # its header on iOS. Add it ONLY here (a global force-include would clash with
   # LLVM's own sys_icache_invalidate declaration in Memory.inc).
+  # asmjit already includes OSCacheControl.h but only under a macOS-only guard,
+  # so on iOS sys_icache_invalidate is used undeclared. Prepend an unconditional
+  # Apple include at the very top (own sentinel; header guards make the later
+  # guarded include a no-op).
   local vm="${RPCS3_DIR}/3rdparty/asmjit/asmjit/src/asmjit/core/virtmem.cpp"
-  if [ -f "${vm}" ] && ! grep -q 'OSCacheControl' "${vm}"; then
-    perl -0pi -e 's/\A/#if defined(__APPLE__)\n#include <libkern\/OSCacheControl.h>\n#endif\n/' "${vm}"
+  if [ -f "${vm}" ] && ! grep -q 'AYS3_ICACHE_SHIM' "${vm}"; then
+    perl -0pi -e 's/\A/\/\/ AYS3_ICACHE_SHIM\n#if defined(__APPLE__)\n#include <libkern\/OSCacheControl.h>\n#endif\n/' "${vm}"
     echo "  asmjit virtmem: added OSCacheControl.h"
   fi
 }
