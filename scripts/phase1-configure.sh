@@ -175,6 +175,19 @@ if [ ! -f "${TOOLCHAIN}" ]; then
 fi
 [ -f "${TOOLCHAIN}" ] && echo "toolchain: ${TOOLCHAIN} ($(wc -l < "${TOOLCHAIN}") lines)"
 
+# --- 2c. Stub librt.a: something in the link graph adds -lrt (Linux realtime
+# lib). On iOS clock_gettime/shm_open live in libSystem, so an empty arm64-iOS
+# librt.a satisfies the -lrt flag with no missing symbols. Added to the linker
+# search path for all executables (the probe and, later, the app).
+STUBLIBS="${WORK}/stublibs"
+mkdir -p "${STUBLIBS}"
+if [ ! -f "${STUBLIBS}/librt.a" ]; then
+  echo 'static int ays3_rt_stub;' > "${STUBLIBS}/rt.c"
+  xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.3 \
+    -c "${STUBLIBS}/rt.c" -o "${STUBLIBS}/rt.o" 2>/dev/null && \
+  ar rcs "${STUBLIBS}/librt.a" "${STUBLIBS}/rt.o" && echo "stub librt.a created"
+fi
+
 # --- 2b. Host llvm-tblgen (cross-compiling LLVM to iOS needs native tools) -----
 # When BUILD_LLVM cross-compiles LLVM for iOS, the table-gen tools must run on
 # the build host. LLVM auto-starts a NATIVE sub-build, but under the iOS
@@ -227,6 +240,11 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include/AL" \
   -DAYS3_CORE_ONLY=ON \
   -DAYS3_PROBE=ON \
+  -DCMAKE_EXE_LINKER_FLAGS="-L${STUBLIBS}" \
+  -DUSE_SYSTEM_ZSTD=OFF \
+  -DCURL_ZSTD=OFF \
+  -DCURL_BROTLI=OFF \
+  -DUSE_NGHTTP2=OFF \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
   -DUSE_SYSTEM_SDL=OFF \
