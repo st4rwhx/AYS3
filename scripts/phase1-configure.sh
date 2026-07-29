@@ -100,7 +100,6 @@ patch_rpcs3() {
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #include <dlfcn.h>
-#include <libkern/OSCacheControl.h>  // sys_icache_invalidate (asmjit) — declared but iOS-guarded elsewhere
 // Real pthread_jit_write_protect_np is marked unavailable for iOS in the SDK
 // header but exists at runtime; reach it via dlsym. RWX JIT (debugger) makes it
 // a no-op when absent.
@@ -130,6 +129,14 @@ SHIM
     echo "  JIT: shim written + renamed in $(grep -rl 'ays3_jit_wp' "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null | wc -l | tr -d ' ') file(s)"
   fi
 
+  # Wall #13: asmjit's virtmem.cpp calls sys_icache_invalidate but doesn't pull
+  # its header on iOS. Add it ONLY here (a global force-include would clash with
+  # LLVM's own sys_icache_invalidate declaration in Memory.inc).
+  local vm="${RPCS3_DIR}/3rdparty/asmjit/asmjit/src/asmjit/core/virtmem.cpp"
+  if [ -f "${vm}" ] && ! grep -q 'OSCacheControl' "${vm}"; then
+    perl -0pi -e 's/\A/#if defined(__APPLE__)\n#include <libkern\/OSCacheControl.h>\n#endif\n/' "${vm}"
+    echo "  asmjit virtmem: added OSCacheControl.h"
+  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
