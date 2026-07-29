@@ -44,10 +44,15 @@ patch_rpcs3() {
   # Wall #1: 3rdparty/libusb/os.cmake rejects iOS. The Apple branch only fills
   # PLATFORM_SRC when CMAKE_SYSTEM_NAME == "Darwin"; the iOS toolchain sets it to
   # "iOS". Let iOS reuse the Darwin/IOKit backend so configure proceeds.
+  # iOS gets a device-LESS libusb backend: posix threads/events only, no
+  # darwin_usb.c (its IOKit USB headers — IOKit/IOCFBundle.h — don't exist on
+  # iOS, and iOS can't do raw USB anyway). The generic libusb core still
+  # compiles; the missing backend symbol only matters at final executable link
+  # (a later phase), not when creating the static core lib.
   local osc="${RPCS3_DIR}/3rdparty/libusb/os.cmake"
   if [ -f "${osc}" ] && ! grep -q 'STREQUAL "iOS"' "${osc}"; then
-    sed -i.bak 's/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")/if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")/' "${osc}"
-    echo "  patched libusb/os.cmake for iOS: $(grep -c 'STREQUAL "iOS"' "${osc}") hit(s)"
+    perl -0pi -e 's{if \(CMAKE_SYSTEM_NAME STREQUAL "Darwin"\)}{if (CMAKE_SYSTEM_NAME STREQUAL "iOS")\n\t\tset(PLATFORM_SRC threads_posix.c events_posix.c)\n\telseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")}' "${osc}"
+    echo "  patched libusb/os.cmake: iOS device-less backend"
   fi
 
   # Wall #7 (strategic): RPCS3 is a monolithic Qt desktop app. Its rpcs3/
@@ -95,6 +100,7 @@ patch_rpcs3() {
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #include <dlfcn.h>
+#include <libkern/OSCacheControl.h>  // sys_icache_invalidate (asmjit) — declared but iOS-guarded elsewhere
 // Real pthread_jit_write_protect_np is marked unavailable for iOS in the SDK
 // header but exists at runtime; reach it via dlsym. RWX JIT (debugger) makes it
 // a no-op when absent.
@@ -124,13 +130,6 @@ SHIM
     echo "  JIT: shim written + renamed in $(grep -rl 'ays3_jit_wp' "${RPCS3_DIR}/rpcs3" "${RPCS3_DIR}/Utilities" "${RPCS3_DIR}/3rdparty/asmjit" --include=*.cpp --include=*.h --include=*.hpp 2>/dev/null | wc -l | tr -d ' ') file(s)"
   fi
 
-  # Wall #12: cellMic.h includes "alc.h" unconditionally even though its OpenAL
-  # usage is guarded by WITHOUT_OPENAL (set on iOS). Guard the include too.
-  local mic="${RPCS3_DIR}/rpcs3/Emu/Cell/Modules/cellMic.h"
-  if [ -f "${mic}" ] && grep -q '^#include "alc.h"' "${mic}"; then
-    perl -i -pe 's{^#include "alc\.h"$}{#ifndef WITHOUT_OPENAL\n#include "alc.h"\n#endif}' "${mic}"
-    echo "  guarded alc.h include in cellMic.h"
-  fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 
@@ -193,7 +192,7 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_MACOSX_BUNDLE=OFF \
   -DCMAKE_C_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h" \
-  -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h" \
+  -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include/AL" \
   -DAYS3_CORE_ONLY=ON \
   -DUSE_NATIVE_INSTRUCTIONS=OFF \
   -DUSE_SYSTEM_FFMPEG=OFF \
