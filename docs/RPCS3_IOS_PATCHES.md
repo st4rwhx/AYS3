@@ -201,13 +201,18 @@ probe link advanced past ffmpeg to the next (and, for the core, final) boundary.
   wall**. `nm -u` on the linked probe then emits `41-app-seam.txt`: the exact
   interface the AYS3 app target must implement. Hand-stubbing the whole Input
   subsystem was rejected as throwaway work the real app replaces.
-- **Link mechanics gotcha:** the first attempt listed `librpcs3_emu.a` **twice**
-  (a manual `-Wl,-force_load` in `target_link_options` *and* a normal
-  `target_link_libraries(rpcs3_emu)`), which double-loaded objects and failed
-  with `duplicate symbol perf_stat<...>::g_tls_perf_stat`. Fixed by referencing
-  the archive **once** via CMake's `$<LINK_LIBRARY:WHOLE_ARCHIVE,rpcs3_emu>` (maps
-  to a single `-force_load`, keeps transitive deps). `-undefined dynamic_lookup`
-  itself is accepted on iOS (deprecation warning only).
+- **Link mechanics — force_load abandoned for on-demand:** the probe first
+  `-force_load`ed the whole core to surface every symbol. That failed with
+  `duplicate symbol perf_stat<...>::g_tls_perf_stat` — two TUs both define that
+  weak thread-local init routine, and force_load pulls *both*. `WHOLE_ARCHIVE`
+  (single `-force_load`) didn't help: the duplicate is intrinsic to pulling all
+  objects, not double-listing. Since the **real AYS3 app links `rpcs3_emu` as a
+  normal pull-on-demand archive** (only referenced TUs come in), the duplicate is
+  a force_load artifact that won't occur in the app. So the probe now mirrors the
+  app: it references the core global `Emu` (`extern Emulator Emu;`) to pull the
+  real **boot subgraph** on demand — a truer "does the headless-boot path link
+  for iOS?" test. `-undefined dynamic_lookup` is accepted on iOS (deprecation
+  warning only) and defers the seam.
 - **Milestone:** Phase 1/2 toolchain de-risk is **DONE** — RPCS3's PS3 core
   (LLVM PPU/SPU JIT, asmjit, SPU recompilers, all 3rdparty) **compiles and links
   for arm64-apple-ios**. Next: build the real AYS3 app target that provides the

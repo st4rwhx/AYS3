@@ -148,21 +148,30 @@ SHIM
   if [ -f "${rc2}" ] && ! grep -q 'ays3_probe' "${rc2}"; then
     cat > "${RPCS3_DIR}/rpcs3/ays3_probe.cpp" <<'PROBE'
 #include <cstdio>
-// Force-loaded against librpcs3_emu.a; entry point just proves the core links.
-int main() { std::printf("AYS3 probe: rpcs3_emu linked for iOS\n"); return 0; }
+// Reference RPCS3's real core global `Emulator Emu;` (Emu/System.cpp). Taking
+// its address forces the linker to pull the ACTUAL boot dependency graph from
+// librpcs3_emu.a on demand — a genuine "does the headless-boot path link for
+// arm64-iOS?" test — instead of -force_load pulling every object (which
+// duplicated a weak thread-local perf_stat init routine). The forward
+// declaration matches RPCS3's definition, so this emits the same reference the
+// core's own TUs use; the archive resolves it.
+class Emulator;
+extern Emulator Emu;
+int main() { std::printf("AYS3 probe: boot path linked for iOS (&Emu=%p)\n", (const void*)&Emu); return 0; }
 PROBE
     cat >> "${rc2}" <<'CM'
 
 # AYS3 Phase 2 link probe (added by scripts/phase1-configure.sh)
 if(AYS3_PROBE)
     add_executable(ays3_probe ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp)
-    # WHOLE_ARCHIVE force-loads EVERY object from the core (so all its undefined
-    # refs surface — the point of the probe) while still bringing rpcs3_emu's
-    # transitive deps (LLVM, ffmpeg, curl, SDL...). It references the archive
-    # exactly ONCE. A manual `-force_load` PLUS a normal `target_link_libraries`
-    # listed librpcs3_emu.a twice, which double-loaded objects and produced a
-    # "duplicate symbol (perf_stat<...>::g_tls_perf_stat)" link error.
-    target_link_libraries(ays3_probe PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,rpcs3_emu>")
+    # Normal (pull-on-demand) archive link — exactly how the real AYS3 app will
+    # consume rpcs3_emu. The probe references the core's `Emu` global, so the
+    # linker pulls the real boot subgraph and its transitive 3rdparty deps
+    # (LLVM, ffmpeg, curl, SDL...). We deliberately do NOT -force_load the whole
+    # archive: that pulled two TUs both defining a weak thread-local perf_stat
+    # init routine and failed with a duplicate-symbol error that would never
+    # occur in the on-demand app link.
+    target_link_libraries(ays3_probe PRIVATE rpcs3_emu)
     target_link_options(ays3_probe PRIVATE
         # iconv lives in the iOS SDK (libiconv.tbd) — a real, satisfiable dep.
         "SHELL:-liconv"
@@ -372,7 +381,7 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       echo "== ffmpeg swap SKIPPED (iOS libs or dst dir absent) =="
     fi
 
-    echo "== linking ays3_probe (force_load rpcs3_emu, seam deferred) =="
+    echo "== linking ays3_probe (on-demand rpcs3_emu via &Emu, seam deferred) =="
     ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_probe \
       2>&1 | tee "${LOG_DIR}/40-link-probe.log"
     PROBE_EXIT=${PIPESTATUS[0]}
