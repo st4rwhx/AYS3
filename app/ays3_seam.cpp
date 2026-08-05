@@ -160,12 +160,11 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// 3rdparty gaps that are part of the complete seam (confirmed absent from
-// librpcs3_emu.a by the force_load probe): our iOS device-LESS libusb backend
-// omits the OS backend object + timers, and the bundled curl references a
-// wolfSSL TLS1.3 groups setter the wolfssl build didn't export. None are used
-// on a headless boot with no USB access or networking; provide safe stubs so
-// the strict link resolves. (C linkage -> exact unmangled symbol names.)
+// 3rdparty gaps from our iOS device-LESS libusb backend (it omits the OS
+// backend object + timer helpers). Not used on a headless boot with no USB
+// access; safe stubs so the strict link resolves. (C linkage -> exact unmangled
+// symbol names.) NOTE: wolfSSL_CTX_set1_groups_list is NOT stubbed here — the
+// bundled libwolfssl.a actually provides it, so a stub would duplicate it.
 // ---------------------------------------------------------------------------
 extern "C" {
 	// `const struct libusb_os_backend usbi_backend;` — zeroed storage. Only
@@ -173,5 +172,4 @@ extern "C" {
 	alignas(16) unsigned char usbi_backend[512] = {};
 	void usbi_get_monotonic_time(struct timespec* tp) { if (tp) { tp->tv_sec = 0; tp->tv_nsec = 0; } }
 	void usbi_get_real_time(struct timespec* tp)      { if (tp) { tp->tv_sec = 0; tp->tv_nsec = 0; } }
-	int  wolfSSL_CTX_set1_groups_list(void* /*ctx*/, char* /*list*/) { return 1; }
 }
