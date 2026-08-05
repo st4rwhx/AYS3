@@ -77,3 +77,79 @@ internals to reimplement.
    feasibility hinges on.
 
 On-device verification stays with the user via sideload, as with AYS2.
+
+## Exact seam signatures (gathered from RPCS3 master headers)
+
+```cpp
+// rpcs3/Input/pad_thread.h  — pad_thread has NO virtuals (safe to hand-stub)
+class pad_thread {
+    pad_thread(void* curthread, void* curwindow, std::string_view title_id);
+    ~pad_thread();
+    s32  AddLddPad();
+    void UnregisterLddPad(u32 handle);
+    void SetIntercepted(bool intercepted);
+    void SetRumble(u32 pad, u8 large_motor, u8 small_motor);
+};
+namespace pad {
+    extern atomic_t<pad_thread*> g_pad_thread;   // -> define = {}
+    extern shared_mutex         g_pad_mutex;     // -> define default
+}
+
+// rpcs3/Input/sdl_instance.h  (#ifdef HAVE_SDL3) — ONE virtual (dtor) -> tiny vtable
+struct sdl_instance {
+    virtual ~sdl_instance();
+    static sdl_instance& get_instance();   // -> function-local static
+    bool initialize();                     // -> return true
+    void pump_events();                    // -> {}
+};
+
+// rpcs3/Input/ps_move_tracker.h — template<bool Diag=false>, ONE virtual (dtor)
+template <bool DiagnosticsEnabled = false> class ps_move_tracker {
+    ps_move_tracker();  virtual ~ps_move_tracker();
+    void set_image_data(const void* buf, u64 size, u32 w, u32 h, s32 format);
+    void process_image();
+    void set_active(u32 index, bool active);
+    void set_hue(u32 index, u16 hue);
+    void set_hue_threshold(u32 index, u16 threshold);
+    void set_saturation_threshold(u32 index, u16 threshold);
+    static std::tuple<u8,u8,u8>  hsv_to_rgb(u16 hue, f32 sat, f32 val);
+    static std::tuple<s16,f32,f32> rgb_to_hsv(f32 r, f32 g, f32 b);
+};   // referenced instantiation: ps_move_tracker<false>
+
+// rpcs3/Input/product_info.h
+namespace input { std::vector<product_info> get_products_by_class(int class_id); }
+
+// rpcs3/Input/ps_move_config.h — derives cfg::node; ctor lives in the .cpp
+struct cfg_ps_moves final : cfg::node { cfg_ps_moves(); bool load(); /*move1..4*/ };
+extern cfg_ps_moves g_cfg_move;
+
+// app identity / lifecycle (global / rpcs3 ns) — trivial, header-free stubs
+namespace rpcs3 { std::string get_verbose_version(); std::string get_version_and_branch(); }
+[[noreturn]] void report_fatal_error(std::string_view, bool is_html, bool include_help);
+void qt_events_aware_op(int repeat_ms, std::function<bool()> wrapped_op);
+```
+
+## Per-symbol strategy (compile real source vs hand-stub)
+
+The decision that shapes the app target: which seam symbols get RPCS3's **real
+`.cpp`** compiled into the app, vs a **null hand-stub**.
+
+| Symbol(s) | Strategy | Why |
+|---|---|---|
+| `rpcs3::get_verbose_version` / `get_version_and_branch` | **stub** | trivial, app-owned identity |
+| `report_fatal_error`, `qt_events_aware_op` | **stub** | app lifecycle glue, no Qt on iOS |
+| `pad_thread::*` + `pad::g_pad_thread`/`g_pad_mutex` | **stub** | no virtuals; avoids `pad_thread.cpp` which pulls Qt keyboard/mouse handlers |
+| `input::get_products_by_class` | **stub** | returns empty list (no devices) |
+| `sdl_instance::*` | **stub** | one virtual (dtor) → tiny self-contained vtable; SDL not needed headless |
+| `ps_move_tracker<false>::*` | **stub** (member specializations) | one virtual (dtor); PS Move camera unused headless |
+| `cfg_ps_moves::load` + `g_cfg_move` | **compile `Input/ps_move_config.cpp`** | `g_cfg_move` must be *constructed* (cfg::node ctor + move1..4 members); reproducing that by hand cascades — the real `.cpp` is self-contained cfg (no Qt) |
+
+So the app glue = one `ays3_seam.mm` of null stubs + compiling the single
+self-contained `Input/ps_move_config.cpp`. Everything else the core needs is
+already in `librpcs3_emu.a`.
+
+**Note on the CI spike:** the spike probe keeps `-undefined dynamic_lookup` (it
+proves *linkability* — the milestone). The seam above is only *required* for the
+real, runnable app, because CI cannot execute an arm64-iOS binary anyway — boot
++ RAM must be measured on the user's device via sideload. So the glue lands with
+the app target, validated on-device, not in the CI link probe.
