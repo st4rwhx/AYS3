@@ -19,7 +19,12 @@
 #include <tuple>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <csignal>
 #include <ctime>
+#include <unistd.h>
+#include <execinfo.h>
 
 // RPCS3's fixed-width aliases (util/types.hpp). Matching std:: types keeps the
 // Itanium mangling identical (e.g. u64 -> unsigned long long -> 'y').
@@ -32,17 +37,77 @@ using s32 = std::int32_t;
 using f32 = float;
 
 // ---------------------------------------------------------------------------
+// Crash diagnostics — the RPCS3 core does heavy work in global constructors
+// (logs, config, memory reservation, threads) that runs BEFORE main(), so a
+// launch crash gives no on-screen output. Install a signal handler as early as
+// possible (constructor priority 101, ahead of the core's default-priority
+// ctors) and route report_fatal_error through the same log, writing a readable
+// reason + backtrace to <app>/Documents/ips3_crash.txt (retrievable via the
+// Files app because UIFileSharingEnabled is set) and to stderr.
+// ---------------------------------------------------------------------------
+static void ays3_crash_path(char* out, unsigned long n)
+{
+	const char* home = ::getenv("HOME");
+	std::snprintf(out, n, "%s/Documents/ips3_crash.txt", home ? home : "/tmp");
+}
+
+static void ays3_log_line(const char* msg)
+{
+	char path[1200];
+	ays3_crash_path(path, sizeof(path));
+	if (FILE* f = std::fopen(path, "a"))
+	{
+		std::fprintf(f, "%s\n", msg);
+		std::fclose(f);
+	}
+	std::fprintf(stderr, "iPS3: %s\n", msg);
+}
+
+extern "C" void ays3_signal_handler(int sig)
+{
+	char path[1200];
+	ays3_crash_path(path, sizeof(path));
+	if (FILE* f = std::fopen(path, "a"))
+	{
+		std::fprintf(f, "FATAL: signal %d\n", sig);
+		std::fflush(f);
+		void* frames[64];
+		int n = ::backtrace(frames, 64);
+		::backtrace_symbols_fd(frames, n, ::fileno(f));
+		std::fclose(f);
+	}
+	std::signal(sig, SIG_DFL);
+	std::raise(sig);
+}
+
+__attribute__((constructor(101)))
+static void ays3_install_diagnostics()
+{
+	// Fresh crash file per launch.
+	char path[1200];
+	ays3_crash_path(path, sizeof(path));
+	if (FILE* f = std::fopen(path, "w")) { std::fprintf(f, "iPS3 launch diagnostics\n"); std::fclose(f); }
+
+	const int sigs[] = { SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGFPE, SIGTRAP };
+	for (int s : sigs) std::signal(s, ays3_signal_handler);
+}
+
+// ---------------------------------------------------------------------------
 // App identity / lifecycle (global / rpcs3 namespace)
 // ---------------------------------------------------------------------------
 namespace rpcs3
 {
-	std::string get_verbose_version()   { return "AYS3 (RPCS3 core, iOS)"; }
-	std::string get_version_and_branch(){ return "AYS3"; }
+	std::string get_verbose_version()   { return "iPS3 (RPCS3 core, iOS)"; }
+	std::string get_version_and_branch(){ return "iPS3"; }
 }
 
 // [[noreturn]] void report_fatal_error(std::string_view, bool, bool)
-[[noreturn]] void report_fatal_error(std::string_view /*text*/, bool /*is_html*/, bool /*include_help*/)
+// Log the message (RPCS3 calls this on fatal init errors) before aborting.
+[[noreturn]] void report_fatal_error(std::string_view text, bool /*is_html*/, bool /*include_help*/)
 {
+	std::string msg = "report_fatal_error: ";
+	msg.append(text.data(), text.size());
+	ays3_log_line(msg.c_str());
 	std::abort();
 }
 

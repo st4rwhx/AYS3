@@ -56,7 +56,7 @@ static double ays3_resident_mb(void)
 		if (@available(iOS 13.0, *)) availMB = (double)os_proc_available_memory() / (1024.0 * 1024.0);
 		double up = -[self->_start timeIntervalSinceNow];
 		self->_label.text = [NSString stringWithFormat:
-			@"AYS3 — RPCS3 core on iOS\n"
+			@"iPS3 — RPCS3 core on iOS\n"
 			 "(Phase 2 · RAM baseline)\n\n"
 			 "resident: %.1f MB\n"
 			 "available: %.1f MB\n\n"
