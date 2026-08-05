@@ -77,3 +77,11 @@ jobs:
           name: phase1-spike-logs
           path: spike-logs/
           if-no-files-found: warn
+
+      - name: Upload AYS3 RAM-probe IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AYS3-ramprobe-ipa
+          path: AYS3.ipa
+          if-no-files-found: warn

@@ -177,8 +177,10 @@ class Emulator;
 extern Emulator Emu;
 int main() { std::printf("AYS3 probe: boot path linked for iOS (&Emu=%p)\n", (const void*)&Emu); return 0; }
 PROBE
-    # App seam glue (versioned in the AYS3 repo under app/).
-    cp "${ROOT}/app/ays3_seam.cpp" "${RPCS3_DIR}/rpcs3/ays3_seam.cpp"
+    # App seam glue + RAM-probe app sources (versioned in the AYS3 repo under app/).
+    cp "${ROOT}/app/ays3_seam.cpp"     "${RPCS3_DIR}/rpcs3/ays3_seam.cpp"
+    cp "${ROOT}/app/ays3_ramprobe.mm"  "${RPCS3_DIR}/rpcs3/ays3_ramprobe.mm"
+    cp "${ROOT}/app/ays3_Info.plist"   "${RPCS3_DIR}/rpcs3/ays3_Info.plist"
     cat >> "${rc2}" <<'CM'
 
 # AYS3 Phase 2 link probe + app seam (added by scripts/phase1-configure.sh)
@@ -194,8 +196,26 @@ if(AYS3_PROBE)
     # AYS3 app performs; any remaining undefined symbol is a genuine seam gap.
     target_link_options(ays3_probe PRIVATE "SHELL:-liconv")
 endif()
+
+# AYS3 Phase 2 RAM-probe iOS app: a real .app bundle (UIKit) that links the core
+# and shows resident memory on-device. Same strict link as ays3_probe; the .mm
+# builds with ARC. Packaged into an unsigned .ipa; the sideloader re-signs.
+if(AYS3_APP)
+    add_executable(ays3_app MACOSX_BUNDLE
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_ramprobe.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_seam.cpp)
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ays3_ramprobe.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(ays3_app PRIVATE rpcs3_emu)
+    target_link_options(ays3_app PRIVATE "SHELL:-liconv")
+    set_target_properties(ays3_app PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/ays3_Info.plist
+        MACOSX_BUNDLE_GUI_IDENTIFIER com.ays3.ramprobe
+        MACOSX_BUNDLE_BUNDLE_NAME AYS3
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO)
+endif()
 CM
-    echo "  Phase 2: added ays3_probe + ays3_seam (strict link, no dynamic_lookup)"
+    echo "  Phase 2: added ays3_probe + ays3_app (strict link, no dynamic_lookup)"
   fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
@@ -334,6 +354,7 @@ cmake -S "${RPCS3_DIR}" -B "${WORK}/build-ios" -G Ninja \
   -DCMAKE_CXX_FLAGS="-include ${WORK}/ays3_ios_jit_shim.h -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include -I${RPCS3_DIR}/3rdparty/OpenAL/openal-soft/include/AL" \
   -DAYS3_CORE_ONLY=ON \
   -DAYS3_PROBE=ON \
+  -DAYS3_APP=ON \
   -DCMAKE_EXE_LINKER_FLAGS="-L${STUBLIBS}" \
   -DUSE_SYSTEM_ZSTD=OFF \
   -DCURL_ZSTD=OFF \
@@ -424,6 +445,30 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
     else
       echo "== probe did NOT link — remaining hard errors =="
       grep -oE "\"[^\"]+\", referenced from|Undefined symbols|ld: symbol.*not found|undefined symbol: .*|built for '[^']*'" "${LOG_DIR}/40-link-probe.log" | sort -u | head -60 || true
+    fi
+
+    # --- 6. Build the RAM-probe .app and package an unsigned .ipa -------------
+    # Real UIKit app bundle that links the core; the user sideloads the .ipa
+    # (their tool re-signs) to see resident memory on-device.
+    echo "== building ays3_app (.app bundle) =="
+    ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_app \
+      2>&1 | tee "${LOG_DIR}/50-app-build.log"
+    echo "app build exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/50-app-build.log"
+    APP_BUNDLE="$(find "${WORK}/build-ios" -name 'ays3_app.app' -type d 2>/dev/null | head -1)"
+    if [ -n "${APP_BUNDLE}" ] && [ -d "${APP_BUNDLE}" ]; then
+      echo "== packaging IPA from ${APP_BUNDLE} =="
+      IPA_DIR="${WORK}/ipa"
+      rm -rf "${IPA_DIR}" && mkdir -p "${IPA_DIR}/Payload"
+      cp -R "${APP_BUNDLE}" "${IPA_DIR}/Payload/"
+      # Ensure the Mach-O is directly in the .app (iOS flat bundle), not nested.
+      ( cd "${IPA_DIR}" && zip -qry "${ROOT}/AYS3.ipa" Payload )
+      ls -lh "${ROOT}/AYS3.ipa" 2>/dev/null | tee -a "${LOG_DIR}/50-app-build.log"
+      echo "IPA: ${ROOT}/AYS3.ipa"
+      xcrun vtool -show-build "${APP_BUNDLE}/ays3_app" 2>/dev/null | grep -iE "platform|minos" || true
+      echo "app binary size: $(du -h "${APP_BUNDLE}/ays3_app" 2>/dev/null | cut -f1)"
+    else
+      echo "== ays3_app bundle NOT produced — link/build errors =="
+      grep -iE "error:|undefined|ld: |duplicate symbol|ninja: build stopped" "${LOG_DIR}/50-app-build.log" | head -40 || true
     fi
   fi
 else
