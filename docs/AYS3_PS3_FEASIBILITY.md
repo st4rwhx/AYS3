@@ -54,14 +54,19 @@ a hard stop at each.
 ### Phase 0 — this document + repo skeleton (done)
 Facts + architecture + plan. No emulator code.
 
-### Phase 1 — de-risk the TOOLCHAIN (current)
-Prove RPCS3 (or just its core) can be **configured/cross-compiled for
-arm64-apple-ios** in CI, isolated.
-- Clone RPCS3 (pinned) in CI; fetch an iOS CMake toolchain.
-- Attempt a **configure** for `arm64-apple-ios` on a macOS runner; upload logs.
-- Success criterion: how far configuration gets and **what the first real wall
-  is**. No boot, no UI.
-- If it fails hard here → stop, minimal cost lost.
+### Phase 1 — de-risk the TOOLCHAIN ✅ DONE
+Proved RPCS3's **core cross-compiles AND links for arm64-apple-ios** in CI.
+- Clone RPCS3 (pinned) in CI; fetch leetal/ios-cmake toolchain. ✓
+- Configure + build the **Emu core only** (`AYS3_CORE_ONLY`, Android-style, no
+  Qt) for `arm64-apple-ios` on a macOS-15 runner. ✓ `iOS build exit: 0`.
+- Link probe: the core boot subgraph links into a valid Mach-O
+  (`platform IOS`, `minos 16.3`). ✓
+- 16 walls cleared (libusb, SDL3, CMake 4.x, host LLVM tblgen, curl, core-only
+  pivot, -Werror, `to_chars`, OpenAL/Vulkan, **the JIT W^X**, audio backends,
+  iOS-ffmpeg cross-build, perf_meter TLS duplicate). See
+  `docs/RPCS3_IOS_PATCHES.md`.
+- The remaining **Emu↔app seam** (what the AYS3 app must implement) is
+  enumerated in `docs/AYS3_APP_SEAM.md` — small, almost entirely input/pad glue.
 
 ### Phase 2 — headless boot + RAM measurement
 Get the RPCS3 VM to **initialize** on a device (user supplies PS3 firmware,
