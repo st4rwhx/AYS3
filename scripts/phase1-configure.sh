@@ -159,8 +159,9 @@ SHIM
     echo "  perf_meter: g_tls_perf_stat made constant-initialized (no TLS init dup)"
   fi
 
-  # Phase 2: a link probe target that references the core `Emu` global so the
-  # linker pulls the real boot subgraph on demand (surfaces the app seam).
+  # Phase 2: a link probe that references the core `Emu` global (pulls the real
+  # boot subgraph on demand) AND provides the Emu<->app seam via ays3_seam.cpp,
+  # so it links WITHOUT dynamic_lookup — a strict test that the seam is complete.
   local rc2="${RPCS3_DIR}/rpcs3/CMakeLists.txt"
   if [ -f "${rc2}" ] && ! grep -q 'ays3_probe' "${rc2}"; then
     cat > "${RPCS3_DIR}/rpcs3/ays3_probe.cpp" <<'PROBE'
@@ -176,33 +177,25 @@ class Emulator;
 extern Emulator Emu;
 int main() { std::printf("AYS3 probe: boot path linked for iOS (&Emu=%p)\n", (const void*)&Emu); return 0; }
 PROBE
+    # App seam glue (versioned in the AYS3 repo under app/).
+    cp "${ROOT}/app/ays3_seam.cpp" "${RPCS3_DIR}/rpcs3/ays3_seam.cpp"
     cat >> "${rc2}" <<'CM'
 
-# AYS3 Phase 2 link probe (added by scripts/phase1-configure.sh)
+# AYS3 Phase 2 link probe + app seam (added by scripts/phase1-configure.sh)
 if(AYS3_PROBE)
-    add_executable(ays3_probe ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp)
-    # Normal (pull-on-demand) archive link — exactly how the real AYS3 app will
-    # consume rpcs3_emu. The probe references the core's `Emu` global, so the
-    # linker pulls the real boot subgraph and its transitive 3rdparty deps
-    # (LLVM, ffmpeg, curl, SDL...). We deliberately do NOT -force_load the whole
-    # archive: that pulled two TUs both defining a weak thread-local perf_stat
-    # init routine and failed with a duplicate-symbol error that would never
-    # occur in the on-demand app link.
+    add_executable(ays3_probe
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_seam.cpp)
     target_link_libraries(ays3_probe PRIVATE rpcs3_emu)
-    target_link_options(ays3_probe PRIVATE
-        # iconv lives in the iOS SDK (libiconv.tbd) — a real, satisfiable dep.
-        "SHELL:-liconv"
-        # The remaining undefined symbols are the Emu<->app SEAM (pad/input,
-        # version, fatal-error, qt helper) that RPCS3 puts in rpcs3_lib behind
-        # `if (NOT ANDROID)` — i.e. what the AYS3 app layer will provide, exactly
-        # as the Android app provides its own. Defer them to runtime so the probe
-        # LINKS: this proves the core + its real 3rdparty are iOS-linkable and
-        # that nothing else is an emulator-internal wall. The binary is never run
-        # (it's an arm64-iOS link artifact); `nm -u` below enumerates the seam.
-        "SHELL:-Wl,-undefined,dynamic_lookup")
+    # No -undefined dynamic_lookup: the Emu<->app seam is now PROVIDED by
+    # ays3_seam.cpp, so this is a STRICT link. Success => the seam set is
+    # complete and the core + real 3rdparty link into a runnable arm64-iOS binary
+    # (std:: from libc++, iconv from the SDK). This is exactly the link the real
+    # AYS3 app performs; any remaining undefined symbol is a genuine seam gap.
+    target_link_options(ays3_probe PRIVATE "SHELL:-liconv")
 endif()
 CM
-    echo "  Phase 2: added ays3_probe link target"
+    echo "  Phase 2: added ays3_probe + ays3_seam (strict link, no dynamic_lookup)"
   fi
 }
 patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"

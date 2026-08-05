@@ -13,6 +13,7 @@ on:
       - ".github/workflows/phase1-ios-spike.yml"
       - "scripts/phase1-configure.sh"
       - "cmake/**"
+      - "app/**"
   workflow_dispatch:
 
 jobs:
