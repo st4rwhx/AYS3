@@ -156,11 +156,14 @@ PROBE
 # AYS3 Phase 2 link probe (added by scripts/phase1-configure.sh)
 if(AYS3_PROBE)
     add_executable(ays3_probe ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp)
-    target_link_libraries(ays3_probe PRIVATE rpcs3_emu)
+    # WHOLE_ARCHIVE force-loads EVERY object from the core (so all its undefined
+    # refs surface — the point of the probe) while still bringing rpcs3_emu's
+    # transitive deps (LLVM, ffmpeg, curl, SDL...). It references the archive
+    # exactly ONCE. A manual `-force_load` PLUS a normal `target_link_libraries`
+    # listed librpcs3_emu.a twice, which double-loaded objects and produced a
+    # "duplicate symbol (perf_stat<...>::g_tls_perf_stat)" link error.
+    target_link_libraries(ays3_probe PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,rpcs3_emu>")
     target_link_options(ays3_probe PRIVATE
-        # Force the linker to pull EVERY object from the core so all its
-        # undefined references surface (the whole point of the probe).
-        "SHELL:-Wl,-force_load,$<TARGET_FILE:rpcs3_emu>"
         # iconv lives in the iOS SDK (libiconv.tbd) — a real, satisfiable dep.
         "SHELL:-liconv"
         # The remaining undefined symbols are the Emu<->app SEAM (pad/input,

@@ -201,6 +201,13 @@ probe link advanced past ffmpeg to the next (and, for the core, final) boundary.
   wall**. `nm -u` on the linked probe then emits `41-app-seam.txt`: the exact
   interface the AYS3 app target must implement. Hand-stubbing the whole Input
   subsystem was rejected as throwaway work the real app replaces.
+- **Link mechanics gotcha:** the first attempt listed `librpcs3_emu.a` **twice**
+  (a manual `-Wl,-force_load` in `target_link_options` *and* a normal
+  `target_link_libraries(rpcs3_emu)`), which double-loaded objects and failed
+  with `duplicate symbol perf_stat<...>::g_tls_perf_stat`. Fixed by referencing
+  the archive **once** via CMake's `$<LINK_LIBRARY:WHOLE_ARCHIVE,rpcs3_emu>` (maps
+  to a single `-force_load`, keeps transitive deps). `-undefined dynamic_lookup`
+  itself is accepted on iOS (deprecation warning only).
 - **Milestone:** Phase 1/2 toolchain de-risk is **DONE** — RPCS3's PS3 core
   (LLVM PPU/SPU JIT, asmjit, SPU recompilers, all 3rdparty) **compiles and links
   for arm64-apple-ios**. Next: build the real AYS3 app target that provides the
