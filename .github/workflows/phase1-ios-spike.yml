@@ -16,6 +16,9 @@ on:
       - "app/**"
   workflow_dispatch:
 
+permissions:
+  contents: write   # allow publishing the IPA to GitHub Releases
+
 jobs:
   configure-spike:
     runs-on: macos-15   # Apple Silicon (arm64) — Xcode 16 / newer libc++ for C++20/23 ranges
@@ -85,3 +88,28 @@ jobs:
           name: AYS3-ramprobe-ipa
           path: AYS3.ipa
           if-no-files-found: warn
+
+      - name: Publish IPA to GitHub Release (v1.00)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f AYS3.ipa ]; then
+            echo "No AYS3.ipa produced — skipping release."
+            exit 0
+          fi
+          TAG="v1.00"
+          NOTES="iPS3 — RPCS3 PS3 emulator core on iOS (RAM-probe build).
+          Download **AYS3.ipa** below and sideload with SideStore / AltStore
+          (they re-sign it). This build measures on-device memory.
+          Commit: ${{ github.sha }}"
+          # Update the asset in place if the release exists, else create it.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" AYS3.ipa --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" AYS3.ipa \
+              --title "iPS3 v1.00 (RAM probe)" \
+              --notes "$NOTES"
+          fi
+          echo "Released $TAG with AYS3.ipa"
