@@ -237,6 +237,26 @@ probe link advanced past ffmpeg to the next (and, for the core, final) boundary.
   disabled; `m_log` still works and a headless core needs no exit-time
   profiling. Applied in `patch_rpcs3` via a `perl -0` block edit.
 
+## ✅ MILESTONE — the core links into an arm64-iOS binary
+
+With Wall #16 fixed, the probe **LINKED**: `probe link exit: 0`, output is a
+valid Mach-O with `platform IOS`, `minos 16.3`. RPCS3's PS3 core boot subgraph —
+LLVM PPU/SPU JIT, asmjit, SPU recompilers, and every real 3rdparty (iOS-ffmpeg,
+SDL3, curl, wolfssl, LLVM AArch64, absl, ...) — **cross-compiles and links for
+arm64-apple-ios**. No arch mismatch, no duplicate symbols, no hard link errors.
+
+The app-seam symbols (pad/input, version, `report_fatal_error`, `qt_events_aware_op`)
+are deferred via `-undefined dynamic_lookup` and enumerated in
+`spike-logs/41-app-seam.txt` — the exact RPCS3 C++ interface the real AYS3 app
+target must implement around `Emu::Init`/`BootGame`. `nm -u` also lists
+iOS-provided runtime symbols (memcpy/`__cxa_*`/`__tlv_*`) in
+`41-app-seam-raw.txt`; those resolve at load time and are filtered out of the
+app-seam list (drop demangled symbols still starting with `_`).
+
+**Next phase:** build the real AYS3 iOS app target (Xcode/CMake) that implements
+the seam and calls `Emu::Init`/`BootGame` for the headless boot + RAM
+measurement (the real jetsam go/no-go).
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

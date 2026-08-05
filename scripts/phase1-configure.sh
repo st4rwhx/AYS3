@@ -413,10 +413,21 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       echo "== ays3_probe LINKED for iOS =="
       xcrun vtool -show-build "${PROBE_BIN}" 2>/dev/null | grep -iE "platform|minos" || \
         xcrun otool -l "${PROBE_BIN}" 2>/dev/null | grep -A3 LC_BUILD_VERSION | head -6 || true
-      echo "== Emu<->app seam: symbols the AYS3 app must provide =="
-      xcrun nm -u "${PROBE_BIN}" 2>/dev/null | sed 's/^ *//' | c++filt 2>/dev/null \
-        | sort -u | tee "${LOG_DIR}/41-app-seam.txt" | head -60 || true
-      echo "seam symbol count: $(wc -l < "${LOG_DIR}/41-app-seam.txt" | tr -d ' ')"
+      # All undefined symbols (raw): includes iOS-provided libSystem/libc++/objc
+      # runtime symbols (memcpy, __cxa_throw, __tlv_bootstrap...) that resolve at
+      # load time — NOT things the app must implement.
+      xcrun nm -u "${PROBE_BIN}" 2>/dev/null | sed 's/^ *//' | sort -u \
+        > "${LOG_DIR}/41-app-seam-raw.txt"
+      # The real Emu<->app SEAM: demangle, then drop every symbol still starting
+      # with '_' — those are the C/runtime symbols iOS provides (their demangled
+      # form keeps the leading underscores). What remains are the RPCS3 C++
+      # frontend symbols the AYS3 app must implement (pad_thread::*, sdl_instance::*,
+      # rpcs3::get_verbose_version, report_fatal_error, qt_events_aware_op, ...).
+      c++filt < "${LOG_DIR}/41-app-seam-raw.txt" 2>/dev/null \
+        | grep -v '^_' | sort -u > "${LOG_DIR}/41-app-seam.txt" || true
+      echo "== Emu<->app seam: RPCS3 C++ symbols the AYS3 app must provide =="
+      cat "${LOG_DIR}/41-app-seam.txt" || true
+      echo "raw undefined: $(wc -l < "${LOG_DIR}/41-app-seam-raw.txt" | tr -d ' '), app-seam (RPCS3 C++): $(wc -l < "${LOG_DIR}/41-app-seam.txt" | tr -d ' ')"
     else
       echo "== probe did NOT link — remaining hard errors =="
       grep -oE "\"[^\"]+\", referenced from|Undefined symbols|ld: symbol.*not found|undefined symbol: .*|built for '[^']*'" "${LOG_DIR}/40-link-probe.log" | sort -u | head -60 || true
