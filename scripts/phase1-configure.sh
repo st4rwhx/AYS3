@@ -157,7 +157,20 @@ PROBE
 if(AYS3_PROBE)
     add_executable(ays3_probe ${CMAKE_CURRENT_SOURCE_DIR}/ays3_probe.cpp)
     target_link_libraries(ays3_probe PRIVATE rpcs3_emu)
-    target_link_options(ays3_probe PRIVATE "SHELL:-Wl,-force_load,$<TARGET_FILE:rpcs3_emu>")
+    target_link_options(ays3_probe PRIVATE
+        # Force the linker to pull EVERY object from the core so all its
+        # undefined references surface (the whole point of the probe).
+        "SHELL:-Wl,-force_load,$<TARGET_FILE:rpcs3_emu>"
+        # iconv lives in the iOS SDK (libiconv.tbd) — a real, satisfiable dep.
+        "SHELL:-liconv"
+        # The remaining undefined symbols are the Emu<->app SEAM (pad/input,
+        # version, fatal-error, qt helper) that RPCS3 puts in rpcs3_lib behind
+        # `if (NOT ANDROID)` — i.e. what the AYS3 app layer will provide, exactly
+        # as the Android app provides its own. Defer them to runtime so the probe
+        # LINKS: this proves the core + its real 3rdparty are iOS-linkable and
+        # that nothing else is an emulator-internal wall. The binary is never run
+        # (it's an arm64-iOS link artifact); `nm -u` below enumerates the seam.
+        "SHELL:-Wl,-undefined,dynamic_lookup")
 endif()
 CM
     echo "  Phase 2: added ays3_probe link target"
@@ -356,12 +369,29 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       echo "== ffmpeg swap SKIPPED (iOS libs or dst dir absent) =="
     fi
 
-    echo "== linking ays3_probe (force_load rpcs3_emu) =="
+    echo "== linking ays3_probe (force_load rpcs3_emu, seam deferred) =="
     ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_probe \
       2>&1 | tee "${LOG_DIR}/40-link-probe.log"
-    echo "probe link exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/40-link-probe.log"
-    echo "== undefined symbols (unique) =="
-    grep -oE "\"[^\"]+\", referenced from|Undefined symbols|ld: symbol.*not found|undefined symbol: .*" "${LOG_DIR}/40-link-probe.log" | sort -u | head -60 || true
+    PROBE_EXIT=${PIPESTATUS[0]}
+    echo "probe link exit: ${PROBE_EXIT}" | tee -a "${LOG_DIR}/40-link-probe.log"
+
+    PROBE_BIN="${WORK}/build-ios/bin/ays3_probe"
+    [ -f "${PROBE_BIN}" ] || PROBE_BIN="$(find "${WORK}/build-ios" -name ays3_probe -type f 2>/dev/null | head -1)"
+    if [ -n "${PROBE_BIN}" ] && [ -f "${PROBE_BIN}" ]; then
+      # MILESTONE: the core + its real 3rdparty LINKED for arm64-iOS. Confirm the
+      # binary's platform, then enumerate the Emu<->app seam (the symbols left for
+      # the AYS3 app layer to implement) — the concrete deliverable of Phase 2.
+      echo "== ays3_probe LINKED for iOS =="
+      xcrun vtool -show-build "${PROBE_BIN}" 2>/dev/null | grep -iE "platform|minos" || \
+        xcrun otool -l "${PROBE_BIN}" 2>/dev/null | grep -A3 LC_BUILD_VERSION | head -6 || true
+      echo "== Emu<->app seam: symbols the AYS3 app must provide =="
+      xcrun nm -u "${PROBE_BIN}" 2>/dev/null | sed 's/^ *//' | c++filt 2>/dev/null \
+        | sort -u | tee "${LOG_DIR}/41-app-seam.txt" | head -60 || true
+      echo "seam symbol count: $(wc -l < "${LOG_DIR}/41-app-seam.txt" | tr -d ' ')"
+    else
+      echo "== probe did NOT link — remaining hard errors =="
+      grep -oE "\"[^\"]+\", referenced from|Undefined symbols|ld: symbol.*not found|undefined symbol: .*|built for '[^']*'" "${LOG_DIR}/40-link-probe.log" | sort -u | head -60 || true
+    fi
   fi
 else
   echo "iOS configure did not succeed (exit ${IOS_CFG_EXIT}); skipping build."

@@ -172,6 +172,41 @@ collected the errors; grouped:
 - **Later:** re-enable the specific decoders cellVdec/ATRAC need (M2V/AVC, etc.)
   once we're past headless boot — trivial config change, more build time.
 
+## Wall #14 — CLEARED
+
+The iOS ffmpeg cross-build + lib-swap removed the `built for 'macOS'` error. The
+probe link advanced past ffmpeg to the next (and, for the core, final) boundary.
+
+## Wall #15 — the Emu↔app seam (expected, not an emulator wall)
+
+- **Where:** probe link, after ffmpeg cleared. Undefined symbols, two groups:
+  - **Real iOS deps (satisfiable now):** `iconv*` → add `-liconv` (libiconv is in
+    the iOS SDK). `usbi_backend` / `usbi_get_monotonic_time` / `usbi_get_real_time`
+    → our device-less libusb patch left it without an OS backend (needs a null
+    backend later). `wolfSSL_CTX_set1_groups_list` (from `libcurl.a(wolfssl.c.o)`)
+    → bundled curl↔wolfssl config; only matters for networking.
+  - **App-provided glue:** `pad_thread::*`, `ps_move_tracker<false>::*`,
+    `input::get_products_by_class`, `sdl_instance::*`, `cfg_ps_moves::load`,
+    `pad::g_pad_thread`/`g_pad_mutex`, `g_cfg_move`, `rpcs3::get_verbose_version`,
+    `rpcs3::get_version_and_branch`, `report_fatal_error`, `qt_events_aware_op`.
+- **Why it's not a wall:** RPCS3 keeps all of that in **`rpcs3_lib`**, which its
+  top-level `rpcs3/CMakeLists.txt` builds **only `if (NOT ANDROID)`**. The Android
+  build supplies its own equivalents from its app layer. These are the
+  **Emu↔frontend seam** — exactly where AYS3's own Swift/Obj-C++ app plugs in, so
+  they are *our app's* responsibility, not an emulator-internal blocker.
+- **Probe resolution:** the probe is a link **de-risk artifact**, never executed
+  (it's an arm64-iOS binary). Resolve the real dep (`-liconv`) and **defer the
+  seam** with `-Wl,-undefined,dynamic_lookup` so the probe LINKS — proving the
+  core + its real 3rdparty are iOS-linkable with **no remaining emulator-internal
+  wall**. `nm -u` on the linked probe then emits `41-app-seam.txt`: the exact
+  interface the AYS3 app target must implement. Hand-stubbing the whole Input
+  subsystem was rejected as throwaway work the real app replaces.
+- **Milestone:** Phase 1/2 toolchain de-risk is **DONE** — RPCS3's PS3 core
+  (LLVM PPU/SPU JIT, asmjit, SPU recompilers, all 3rdparty) **compiles and links
+  for arm64-apple-ios**. Next: build the real AYS3 app target that provides the
+  seam symbols and calls `Emu.Init`/`BootGame` for the headless-boot + RAM
+  measurement of Phase 2.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

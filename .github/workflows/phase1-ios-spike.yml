@@ -63,6 +63,10 @@ jobs:
           grep -E "Configuring done|Generating done|iOS configure exit|CMake Error" spike-logs/20-configure-ios.log 2>/dev/null | tail -8 >> "$GITHUB_STEP_SUMMARY" || echo "(no ios cfg log)" >> "$GITHUB_STEP_SUMMARY"
           echo "--- iOS build errors (first 60) ---" >> "$GITHUB_STEP_SUMMARY"
           grep -iE "error:|fatal error|undefined symbol|ninja: build stopped|iOS build exit" spike-logs/30-build-ios.log 2>/dev/null | head -60 >> "$GITHUB_STEP_SUMMARY" || echo "(no ios build log — configure may have failed)" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- probe link result ---" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "probe link exit|ays3_probe LINKED|platform|minos|seam symbol count|did NOT link|built for" spike-logs/40-link-probe.log 2>/dev/null | head -12 >> "$GITHUB_STEP_SUMMARY" || echo "(no probe log)" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- Emu<->app seam (symbols AYS3 app must provide) ---" >> "$GITHUB_STEP_SUMMARY"
+          head -40 spike-logs/41-app-seam.txt 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || echo "(no seam list — probe may not have linked)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload spike logs
