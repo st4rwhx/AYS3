@@ -219,6 +219,24 @@ probe link advanced past ffmpeg to the next (and, for the core, final) boundary.
   seam symbols and calls `Emu.Init`/`BootGame` for the headless-boot + RAM
   measurement of Phase 2.
 
+## Wall #16 — perf_meter thread-local init routine duplicate (link)
+
+- **Where:** probe link (both force_load AND on-demand): `duplicate symbol
+  'thread-local initialization routine for perf_stat<...>::g_tls_perf_stat'`.
+- **Cause:** in `rpcs3/Emu/perf_meter.hpp`, `g_tls_perf_stat` is a
+  `static inline thread_local` struct whose ctor/dtor call
+  `perf_stat_base::add/remove`. The non-trivial ctor forces a **dynamic
+  thread-local initialization routine** (`_ZTH…`). The Xcode-16 linker emits it
+  per-TU without coalescing, so two TUs that share the same `perf_stat<Name>`
+  instantiation (same FNV-hashed name) collide. It fires under **normal
+  on-demand linking** too — both TUs are in the boot subgraph — so it would break
+  the real app link, not just the probe.
+- **Fix:** drop the ctor/dtor so `perf_stat_local` is an aggregate →
+  `g_tls_perf_stat` is **constant-initialized** → no dynamic init routine → no
+  `_ZTH` symbol → no duplicate. Only perf-stat *registration* (add/remove) is
+  disabled; `m_log` still works and a headless core needs no exit-time
+  profiling. Applied in `patch_rpcs3` via a `perl -0` block edit.
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports

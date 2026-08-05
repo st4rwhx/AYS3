@@ -142,8 +142,25 @@ SHIM
     echo "  asmjit virtmem: added OSCacheControl.h"
   fi
 
-  # Phase 2: a link probe target that force-loads librpcs3_emu.a so the linker
-  # must resolve ALL core symbols on iOS (surfaces deferred undefined deps).
+  # Wall #16: perf_meter's g_tls_perf_stat is a `static inline thread_local`
+  # struct with a NON-trivial ctor/dtor (perf_stat_base::add/remove). That forces
+  # a dynamic thread-local INITIALIZATION routine (_ZTH...), which the Xcode-16
+  # linker emits per-TU without coalescing, so two TUs sharing the same
+  # perf_stat<Name> instantiation collide: "duplicate symbol thread-local
+  # initialization routine for perf_stat<...>::g_tls_perf_stat". It fires under
+  # normal on-demand linking too (both TUs land in the boot subgraph), so it
+  # would break the real app link, not just the probe. Drop the ctor/dtor so the
+  # struct is an aggregate → g_tls_perf_stat is CONSTANT-initialized → no dynamic
+  # init routine → no duplicate. Only disables perf-stat *registration* (add/
+  # remove); m_log still works and a headless core needs no exit-time profiling.
+  local pm="${RPCS3_DIR}/rpcs3/Emu/perf_meter.hpp"
+  if [ -f "${pm}" ] && grep -q 'perf_stat_local() noexcept' "${pm}"; then
+    perl -0pi -e 's/(u64 m_log\[66\]\{\};).*?(\}\s*g_tls_perf_stat;)/$1\n\t$2/s' "${pm}"
+    echo "  perf_meter: g_tls_perf_stat made constant-initialized (no TLS init dup)"
+  fi
+
+  # Phase 2: a link probe target that references the core `Emu` global so the
+  # linker pulls the real boot subgraph on demand (surfaces the app seam).
   local rc2="${RPCS3_DIR}/rpcs3/CMakeLists.txt"
   if [ -f "${rc2}" ] && ! grep -q 'ays3_probe' "${rc2}"; then
     cat > "${RPCS3_DIR}/rpcs3/ays3_probe.cpp" <<'PROBE'
