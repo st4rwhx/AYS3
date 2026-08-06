@@ -159,6 +159,24 @@ SHIM
     echo "  perf_meter: g_tls_perf_stat made constant-initialized (no TLS init dup)"
   fi
 
+  # Wall #17: RPCS3 reserves EXECUTABLE JIT memory at STATIC INIT. asmjit's
+  # get_global_runtime() builds a custom_runtime that reserves+commits 16 MiB of
+  # W^X memory, and PPUThread.cpp's global constructors pull it in at load. On
+  # iOS, reserving/committing executable (MAP_JIT) memory before any debugger/JIT
+  # session exists returns EPERM -> ensure() -> report_fatal_error at load, so
+  # the app dies before main() (confirmed on-device: JITASM.cpp:351, errno=1).
+  # For the headless RAM probe (which NEVER runs the JIT) degrade executable JIT
+  # allocations to plain RW on iOS so the core loads and we can measure memory.
+  # Real JIT execution needs the debugger-granted RWX (StikDebug) established
+  # after launch — deferred to a JIT-timing phase (AYS2's specialty).
+  local ja="${RPCS3_DIR}/Utilities/JITASM.cpp"
+  if [ -f "${ja}" ] && ! grep -q 'AYS3_JIT_DEGRADE' "${ja}"; then
+    perl -0pi -e 's/utils::memory_reserve\(size, true\)/utils::memory_reserve(size, AYS3_JIT_RESERVE_EXEC)/g' "${ja}"
+    perl -pi  -e 's/utils::protection::wx/AYS3_JIT_WX/g' "${ja}"
+    perl -0pi -e 's/\A/\/\/ AYS3_JIT_DEGRADE\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n#define AYS3_JIT_RESERVE_EXEC false\n#define AYS3_JIT_WX utils::protection::rw\n#else\n#define AYS3_JIT_RESERVE_EXEC true\n#define AYS3_JIT_WX utils::protection::wx\n#endif\n/' "${ja}"
+    echo "  JITASM: static-init exec JIT reserve degraded to RW on iOS ($(grep -c 'AYS3_JIT_WX' "${ja}") site(s))"
+  fi
+
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
   # boot subgraph on demand) AND provides the Emu<->app seam via ays3_seam.cpp,
   # so it links WITHOUT dynamic_lookup — a strict test that the seam is complete.

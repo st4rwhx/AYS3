@@ -257,6 +257,29 @@ app-seam list (drop demangled symbols still starting with `_`).
 the seam and calls `Emu::Init`/`BootGame` for the headless boot + RAM
 measurement (the real jetsam go/no-go).
 
+## Wall #17 — executable JIT memory reserved at STATIC INIT (on-device launch)
+
+- **Where:** on-device launch crash (captured by the app's diagnostics):
+  `report_fatal_error: Verification failed (object: 0x0)` at
+  `Utilities/JITASM.cpp:351`, in
+  `asmjit::get_global_runtime()::custom_runtime::custom_runtime()`, `errno=1`
+  (EPERM), reached from `_GLOBAL__sub_I_PPUThread.cpp` (a global constructor).
+- **Cause:** `get_global_runtime()`'s `custom_runtime` reserves + commits 16 MiB
+  of **W^X** memory (`memory_reserve(size, true)` + `protection::wx`) at load.
+  On iOS, mapping executable (MAP_JIT) memory before a debugger/JIT session
+  exists is **EPERM**, so `ensure()` fires `report_fatal_error` and the app dies
+  **before `main()`**. This is the iOS **JIT W^X wall**, not the memory/jetsam
+  wall — a crucial, encouraging distinction (the core doesn't OOM; it's blocked
+  on executable-memory permission, which the debugger grants).
+- **Fix (for the RAM probe):** on iOS, degrade the executable JIT reserve/commit
+  to plain **RW** (`AYS3_JIT_RESERVE_EXEC=false`, `AYS3_JIT_WX=protection::rw`)
+  via a `patch_rpcs3` edit of JITASM.cpp. The headless probe never executes JIT,
+  so RW is fine and the core now loads. Non-iOS is unchanged.
+- **Deferred:** real JIT execution (running games) needs the **debugger-granted
+  RWX** (StikDebug), established *after* launch — RPCS3 reserving JIT memory at
+  static init is fundamentally too early, so the proper fix is a JIT-timing
+  phase that defers allocation until the JIT session is up (AYS2's specialty).
+
 ## Noted for later (not yet fatal)
 
 - MoltenVK was **found/built** from the submodule, but Vulkan reports
