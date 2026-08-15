@@ -20,7 +20,6 @@
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
 #import <os/proc.h>
-#include <exception>
 
 // Minimal seam-style declaration: enough to CALL Emulator::Init() on the real
 // global. The real object AND the real code live in rpcs3_emu.a; we only need
@@ -160,28 +159,23 @@ static void ays3_stage(NSString* line)
 	ays3_stage([NSString stringWithFormat:@"pre-Init: rss=%.1f MB — calling Emu::Init(false)", _rssBefore]);
 
 	// Let the UI paint the "running" state before we block on Init.
+	//
+	// No try/catch: ays3_app is compiled inside RPCS3's CMake project, which
+	// builds with -fno-exceptions, so `try` won't even compile here. And an
+	// exception raised inside Emu::Init would unwind through -fno-exceptions
+	// RPCS3 frames and std::terminate anyway — nothing to catch. If Init aborts
+	// or crashes, the seam's signal handler writes Documents/ips3_crash.txt, and
+	// the "pre-Init" breadcrumb above marks how far we got; a "post-Init" line
+	// only appears if Init actually returned.
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
 				   dispatch_get_main_queue(), ^{
-		bool ok = false;
-		try {
-			Emu.Init(false);   // real RPCS3 Emulator::Init (from rpcs3_emu.a)
-			ok = true;
-		} catch (const std::exception& e) {
-			ays3_stage([NSString stringWithFormat:@"Init THREW std::exception: %s", e.what()]);
-		} catch (...) {
-			ays3_stage(@"Init THREW unknown C++ exception");
-		}
+		Emu.Init(false);   // real RPCS3 Emulator::Init (from rpcs3_emu.a)
 
 		self->_rssAfter = ays3_resident_mb();
-		if (ok) {
-			self->_initState = @"returned ✓";
-			ays3_stage([NSString stringWithFormat:@"post-Init: returned OK, rss=%.1f MB (Δ %+.1f)",
-				self->_rssAfter, self->_rssAfter - self->_rssBefore]);
-			[self->_initBtn setTitle:@"Emu::Init() returned ✓" forState:UIControlStateNormal];
-		} else {
-			self->_initState = @"threw (see ips3_stage.txt)";
-			[self->_initBtn setTitle:@"Emu::Init() threw" forState:UIControlStateNormal];
-		}
+		self->_initState = @"returned ✓";
+		ays3_stage([NSString stringWithFormat:@"post-Init: returned OK, rss=%.1f MB (Δ %+.1f)",
+			self->_rssAfter, self->_rssAfter - self->_rssBefore]);
+		[self->_initBtn setTitle:@"Emu::Init() returned ✓" forState:UIControlStateNormal];
 		[self refresh];
 	});
 }
