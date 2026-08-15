@@ -200,13 +200,18 @@ SHIM
 #include <sys/mman.h>
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #define AYS3_MPROTECT_OR_MAP(p, s, pr) do { if (::mprotect((p), (s), (pr)) != 0) { (void)::mmap((p), (s), (pr), MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0); } } while (0)
+// madvise on iOS is only a hint; MADV_WILLNEED pre-faults pages and blows the
+// memory ledger (ENOMEM). Make it non-fatal — pages fault in lazily on access.
+#define AYS3_MADVISE(...) ((void)::madvise(__VA_ARGS__))
 #else
 #define AYS3_MPROTECT_OR_MAP(p, s, pr) ensure(::mprotect((p), (s), (pr)) != -1)
+#define AYS3_MADVISE(...) ensure(::madvise(__VA_ARGS__) != -1)
 #endif
 HDR
     cat "${WORK}/ays3_vm18.h" "${vmn}" > "${vmn}.tmp" && mv "${vmn}.tmp" "${vmn}"
     perl -pi -e 's{ensure\(::mprotect\((.*?), \+prot\) != -1\);}{AYS3_MPROTECT_OR_MAP($1, +prot);}g' "${vmn}"
-    echo "  vm_native: mprotect commit/protect made non-fatal on iOS ($(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}") call site(s))"
+    perl -pi -e 's{ensure\(::madvise\((.*?)\) != -1\);}{AYS3_MADVISE($1);}g' "${vmn}"
+    echo "  vm_native: mprotect+madvise commit/protect made non-fatal on iOS (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}") sites)"
   fi
 
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
