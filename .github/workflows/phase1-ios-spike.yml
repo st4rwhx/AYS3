@@ -53,6 +53,7 @@ jobs:
         env:
           RPCS3_REF: master
           IOS_CMAKE_REF: "4.5.0"
+          IPS3_BUILD_NUM: ${{ github.run_number }}   # stamped into the bundle version
         run: |
           chmod +x scripts/phase1-configure.sh
           ./scripts/phase1-configure.sh
@@ -89,27 +90,41 @@ jobs:
           path: AYS3.ipa
           if-no-files-found: warn
 
-      - name: Publish IPA to GitHub Release (v1.00)
+      - name: Publish versioned release (new version every successful build)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # No roulette. Every build that yields an IPA gets its OWN unique,
+          # auto-incrementing release (v1.0.<run>), marked Latest, with the
+          # version baked into the filename. A build that yields NO IPA fails
+          # LOUDLY (red job) instead of silently leaving an old release looking
+          # current — so "is this broken?" is never ambiguous again.
           if [ ! -f AYS3.ipa ]; then
-            echo "No AYS3.ipa produced — skipping release."
-            exit 0
+            echo "::error::Build produced NO IPA — this build is broken. Nothing released this run; the newest working release stays Latest, but this run is marked failed."
+            exit 1
           fi
-          TAG="v1.00"
+          VER="1.0.${{ github.run_number }}"
+          TAG="v${VER}"
+          SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
+          ASSET="iPS3-v${VER}.ipa"
+          cp AYS3.ipa "${ASSET}"
+
+          # One-time cleanup: retire the old rolling "v1.00" roulette release.
+          gh release delete v1.00 --yes --cleanup-tag 2>/dev/null || true
+
           NOTES="iPS3 — RPCS3 PS3 emulator core on iOS (RAM-probe build).
-          Download **AYS3.ipa** below and sideload with SideStore / AltStore
-          (they re-sign it). This build measures on-device memory.
-          Commit: ${{ github.sha }}"
-          # Update the asset in place if the release exists, else create it.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" AYS3.ipa --clobber
-            gh release edit "$TAG" --notes "$NOTES"
-          else
-            gh release create "$TAG" AYS3.ipa \
-              --title "iPS3 v1.00 (RAM probe)" \
-              --notes "$NOTES"
-          fi
-          echo "Released $TAG with AYS3.ipa"
+
+          **Version ${VER}** · build #${{ github.run_number }} · commit ${SHORT} · built $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          The app shows this same version on screen (iPS3 v${VER}) so you always
+          know which IPA you sideloaded. Download **${ASSET}** below and sideload
+          with SideStore / AltStore (they re-sign it). Tap ▶ Call Emu::Init() to
+          initialise the PS3 core and read the resident-memory delta; any crash
+          lands in the app's Documents/ips3_crash.txt + ips3_stage.txt (Files app)."
+
+          gh release create "$TAG" "${ASSET}" \
+            --title "iPS3 v${VER} (RAM probe · build #${{ github.run_number }})" \
+            --notes "$NOTES" \
+            --latest
+          echo "Released ${TAG} with ${ASSET}"

@@ -129,8 +129,10 @@ static void ays3_stage(NSString* line)
 	if (@available(iOS 13.0, *)) availMB = (double)os_proc_available_memory() / (1024.0 * 1024.0);
 	double up = -[self->_start timeIntervalSinceNow];
 
+	NSString* ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+	if (ver.length == 0) ver = @"?";
 	NSMutableString* s = [NSMutableString stringWithFormat:
-		@"iPS3 — RPCS3 core on iOS\n"
+		@"iPS3 v%@ — RPCS3 core on iOS\n"
 		 "(Phase 2 · Emu::Init probe)\n\n"
 		 "resident: %.1f MB\n"
 		 "available: %.1f MB\n"
@@ -138,7 +140,7 @@ static void ays3_stage(NSString* line)
 		 "core linked ✓ (Emu@%p)\n"
 		 "static-init ✓ (Wall #17)\n\n"
 		 "Emu::Init(): %@",
-		ays3_resident_mb(), availMB, up, (const void*)&Emu, _initState];
+		ver, ays3_resident_mb(), availMB, up, (const void*)&Emu, _initState];
 
 	if (_rssBefore >= 0.0 && _rssAfter >= 0.0) {
 		[s appendFormat:@"\nRSS %.1f → %.1f MB  (Δ %+.1f)",

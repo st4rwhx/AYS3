@@ -492,6 +492,13 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       chmod +x "${APP}/ays3_app"
       cp "${ROOT}/app/ays3_Info.plist" "${APP}/Info.plist"
       printf 'APPL????' > "${APP}/PkgInfo"
+      # Stamp the CI build number into the bundle version so the on-device app
+      # displays the exact version that matches its GitHub release (v1.0.<run>).
+      # No more "which IPA is this?" — the screen and the release tag agree.
+      BV="${IPS3_BUILD_NUM:-0}"
+      /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BV}" "${APP}/Info.plist" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.${BV}" "${APP}/Info.plist" 2>/dev/null || true
+      echo "  stamped bundle version: 1.0.${BV} (build ${BV})"
       # Fold in any compiled resources CMake produced (none expected here).
       SRC_BUNDLE="$(find "${WORK}/build-ios" -type d -name 'ays3_app.app' 2>/dev/null | head -1)"
       if [ -n "${SRC_BUNDLE}" ] && [ -d "${SRC_BUNDLE}/Contents/Resources" ]; then
