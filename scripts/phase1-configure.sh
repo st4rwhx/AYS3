@@ -472,20 +472,40 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
     ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_app \
       2>&1 | tee "${LOG_DIR}/50-app-build.log"
     echo "app build exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/50-app-build.log"
-    APP_BUNDLE="$(find "${WORK}/build-ios" -name 'ays3_app.app' -type d 2>/dev/null | head -1)"
-    if [ -n "${APP_BUNDLE}" ] && [ -d "${APP_BUNDLE}" ]; then
-      echo "== packaging IPA from ${APP_BUNDLE} =="
+    # CMake's MACOSX_BUNDLE under the *Ninja* generator emits a macOS-style
+    # bundle: ays3_app.app/Contents/MacOS/ays3_app + Contents/Info.plist. iOS —
+    # and ldid, the signer SideStore/AltStore run at install — require a FLAT
+    # bundle: App.app/ays3_app + App.app/Info.plist. Given the macOS layout, ldid
+    # reads CFBundleExecutable=ays3_app, looks for it at the bundle ROOT, doesn't
+    # find it (it's under Contents/MacOS/), and aborts:
+    #   ldid.cpp: _assert(): DiskFolder::Open(.../App.app/ays3_app)
+    # Only the Xcode generator produces the flat iOS layout automatically; with
+    # Ninja we must assemble it ourselves. So: find the built Mach-O and build a
+    # guaranteed-flat .app by hand (binary + our Info.plist at the app root).
+    APP_BIN="$(find "${WORK}/build-ios" -type f -name 'ays3_app' 2>/dev/null | head -1)"
+    if [ -n "${APP_BIN}" ] && [ -f "${APP_BIN}" ]; then
+      echo "== assembling FLAT iOS .app from ${APP_BIN} =="
       IPA_DIR="${WORK}/ipa"
-      rm -rf "${IPA_DIR}" && mkdir -p "${IPA_DIR}/Payload"
-      cp -R "${APP_BUNDLE}" "${IPA_DIR}/Payload/"
-      # Ensure the Mach-O is directly in the .app (iOS flat bundle), not nested.
+      APP="${IPA_DIR}/Payload/ays3_app.app"
+      rm -rf "${IPA_DIR}" && mkdir -p "${APP}"
+      cp "${APP_BIN}" "${APP}/ays3_app"
+      chmod +x "${APP}/ays3_app"
+      cp "${ROOT}/app/ays3_Info.plist" "${APP}/Info.plist"
+      printf 'APPL????' > "${APP}/PkgInfo"
+      # Fold in any compiled resources CMake produced (none expected here).
+      SRC_BUNDLE="$(find "${WORK}/build-ios" -type d -name 'ays3_app.app' 2>/dev/null | head -1)"
+      if [ -n "${SRC_BUNDLE}" ] && [ -d "${SRC_BUNDLE}/Contents/Resources" ]; then
+        cp -R "${SRC_BUNDLE}/Contents/Resources/." "${APP}/" 2>/dev/null || true
+      fi
       ( cd "${IPA_DIR}" && zip -qry "${ROOT}/AYS3.ipa" Payload )
+      echo "== flat bundle contents (must show ays3_app + Info.plist at root) =="
+      ls -1 "${APP}"
       ls -lh "${ROOT}/AYS3.ipa" 2>/dev/null | tee -a "${LOG_DIR}/50-app-build.log"
       echo "IPA: ${ROOT}/AYS3.ipa"
-      xcrun vtool -show-build "${APP_BUNDLE}/ays3_app" 2>/dev/null | grep -iE "platform|minos" || true
-      echo "app binary size: $(du -h "${APP_BUNDLE}/ays3_app" 2>/dev/null | cut -f1)"
+      xcrun vtool -show-build "${APP}/ays3_app" 2>/dev/null | grep -iE "platform|minos" || true
+      echo "app binary size: $(du -h "${APP}/ays3_app" 2>/dev/null | cut -f1)"
     else
-      echo "== ays3_app bundle NOT produced — link/build errors =="
+      echo "== ays3_app binary NOT produced — link/build errors =="
       grep -iE "error:|undefined|ld: |duplicate symbol|ninja: build stopped" "${LOG_DIR}/50-app-build.log" | head -40 || true
     fi
   fi
