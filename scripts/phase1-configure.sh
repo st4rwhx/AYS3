@@ -177,6 +177,38 @@ SHIM
     echo "  JITASM: static-init exec JIT reserve degraded to RW on iOS ($(grep -c 'AYS3_JIT_WX' "${ja}") site(s))"
   fi
 
+  # Wall #18: RPCS3's vm reserves ~56 GiB of virtual address at STATIC INIT
+  # (g_base_addr 8 GiB @ 0x2'0000'0000, g_exec 12 GiB, g_hook 32 GiB, g_stat
+  # 4 GiB) as PROT_READ|PROT_WRITE|MAP_NORESERVE — that succeeds lazily on iOS.
+  # But memory_commit()/memory_protect() then do `ensure(::mprotect(...) != -1)`,
+  # and on iOS mprotect over that noreserve range returns ENOMEM (errno 12) ->
+  # report_fatal_error at load (confirmed on-device: vm_native.cpp:325). Same
+  # class as Wall #17: an iOS-incompatible low-level op is fatally asserted.
+  # Degrade it: try mprotect; if iOS rejects it, force-map the pages with a
+  # MAP_FIXED anonymous mapping (best-effort, non-fatal) so the core finishes
+  # static init and we reach the next wall instead of dying before main().
+  local vmn="${RPCS3_DIR}/rpcs3/util/vm_native.cpp"
+  if [ -f "${vmn}" ] && ! grep -q 'AYS3_MPROTECT_OR_MAP' "${vmn}"; then
+    cat > "${WORK}/ays3_vm18.h" <<'HDR'
+// AYS3 Wall #18: on iOS, make RPCS3's mprotect-based commit/protect non-fatal,
+// falling back to a MAP_FIXED anonymous mapping when iOS rejects mprotect over
+// the huge MAP_NORESERVE reservation (ENOMEM). Elsewhere behaves exactly as the
+// original `ensure(::mprotect(...) != -1)`.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#include <sys/mman.h>
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define AYS3_MPROTECT_OR_MAP(p, s, pr) do { if (::mprotect((p), (s), (pr)) != 0) { (void)::mmap((p), (s), (pr), MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0); } } while (0)
+#else
+#define AYS3_MPROTECT_OR_MAP(p, s, pr) ensure(::mprotect((p), (s), (pr)) != -1)
+#endif
+HDR
+    cat "${WORK}/ays3_vm18.h" "${vmn}" > "${vmn}.tmp" && mv "${vmn}.tmp" "${vmn}"
+    perl -pi -e 's{ensure\(::mprotect\((.*?), \+prot\) != -1\);}{AYS3_MPROTECT_OR_MAP($1, +prot);}g' "${vmn}"
+    echo "  vm_native: mprotect commit/protect made non-fatal on iOS ($(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}") call site(s))"
+  fi
+
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
   # boot subgraph on demand) AND provides the Emu<->app seam via ays3_seam.cpp,
   # so it links WITHOUT dynamic_lookup — a strict test that the seam is complete.
