@@ -28,7 +28,7 @@
 // global (defined in the core) and `&Emu` is its real address.
 class Emulator {
 public:
-	void Init(bool add_only = false);
+	void Init();   // RPCS3 master signature: no args (was Init(bool) historically)
 };
 extern Emulator Emu;
 
@@ -158,7 +158,7 @@ static void ays3_stage(NSString* line)
 	_rssBefore = ays3_resident_mb();
 	[self refresh];
 
-	ays3_stage([NSString stringWithFormat:@"pre-Init: rss=%.1f MB — calling Emu::Init(false)", _rssBefore]);
+	ays3_stage([NSString stringWithFormat:@"pre-Init: rss=%.1f MB — calling Emu::Init()", _rssBefore]);
 
 	// Let the UI paint the "running" state before we block on Init.
 	//
@@ -171,7 +171,7 @@ static void ays3_stage(NSString* line)
 	// only appears if Init actually returned.
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
 				   dispatch_get_main_queue(), ^{
-		Emu.Init(false);   // real RPCS3 Emulator::Init (from rpcs3_emu.a)
+		Emu.Init();   // real RPCS3 Emulator::Init (from rpcs3_emu.a)
 
 		self->_rssAfter = ays3_resident_mb();
 		self->_initState = @"returned ✓";
