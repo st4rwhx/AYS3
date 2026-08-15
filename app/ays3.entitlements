@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- RPCS3 reserves ~56 GiB of virtual address at load (g_base/exec/hook/stat).
+	     This entitlement gives the process the large virtual address space iOS
+	     otherwise caps, which is exactly what our vm_native ENOMEM needs. -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+	<!-- Raises the jetsam / physical memory ledger so the emulator can use far
+	     more resident RAM before iOS kills it. Same entitlement GetMoreRam
+	     applies; we declare it up front so any signer/tool can grant it. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

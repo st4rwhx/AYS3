@@ -543,6 +543,19 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       if [ -n "${SRC_BUNDLE}" ] && [ -d "${SRC_BUNDLE}/Contents/Resources" ]; then
         cp -R "${SRC_BUNDLE}/Contents/Resources/." "${APP}/" 2>/dev/null || true
       fi
+      # Embed the memory entitlements RPCS3 needs on iOS (ad-hoc signed, done
+      # LAST so it seals the final binary + Info.plist):
+      #   extended-virtual-addressing → the ~56 GiB virtual reservation
+      #   increased-memory-limit      → the jetsam/physical memory ledger
+      # Both are grantable to free-signed sideloaded apps (what GetMoreRam
+      # applies). SideStore/AltStore/TrollStore re-sign but can carry these.
+      if [ -f "${ROOT}/app/ays3.entitlements" ]; then
+        codesign --force --sign - --timestamp=none \
+          --entitlements "${ROOT}/app/ays3.entitlements" "${APP}" 2>&1 | tail -2 \
+          && echo "  entitlements embedded: extended-virtual-addressing + increased-memory-limit" \
+          || echo "  (ad-hoc entitlement signing failed — continuing unsigned)"
+      fi
+
       # No -y: never store symlinks as links (a stored symlink extracts to a
       # broken link on-device → ldid can't open it). Follow/flatten everything.
       ( cd "${IPA_DIR}" && zip -qr "${ROOT}/AYS3.ipa" Payload )
