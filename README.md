@@ -1,2 +1,2 @@
-# AYS3
+# IPS3
 PS3 emulator on IOS
