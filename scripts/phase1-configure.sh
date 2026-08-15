@@ -490,6 +490,13 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       rm -rf "${IPA_DIR}" && mkdir -p "${APP}"
       cp "${APP_BIN}" "${APP}/ays3_app"
       chmod +x "${APP}/ays3_app"
+      # The core links UNSTRIPPED (~48 MB, huge symbol table). On-device signers
+      # (SideStore/AltStore ldid) frequently choke on binaries that large — ldid
+      # asserts opening the main executable — and every mobile emu port (incl.
+      # ARMSX3) strips before packaging. Standard, and shrinks it a lot.
+      echo "  binary before strip: $(du -h "${APP}/ays3_app" 2>/dev/null | cut -f1)"
+      xcrun strip -x "${APP}/ays3_app" 2>/dev/null || strip -x "${APP}/ays3_app" 2>/dev/null || true
+      echo "  binary after  strip: $(du -h "${APP}/ays3_app" 2>/dev/null | cut -f1)"
       cp "${ROOT}/app/ays3_Info.plist" "${APP}/Info.plist"
       printf 'APPL????' > "${APP}/PkgInfo"
       # Stamp the CI build number into the bundle version so the on-device app
@@ -504,7 +511,9 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       if [ -n "${SRC_BUNDLE}" ] && [ -d "${SRC_BUNDLE}/Contents/Resources" ]; then
         cp -R "${SRC_BUNDLE}/Contents/Resources/." "${APP}/" 2>/dev/null || true
       fi
-      ( cd "${IPA_DIR}" && zip -qry "${ROOT}/AYS3.ipa" Payload )
+      # No -y: never store symlinks as links (a stored symlink extracts to a
+      # broken link on-device → ldid can't open it). Follow/flatten everything.
+      ( cd "${IPA_DIR}" && zip -qr "${ROOT}/AYS3.ipa" Payload )
       echo "== flat bundle contents (must show ays3_app + Info.plist at root) =="
       ls -1 "${APP}"
       ls -lh "${ROOT}/AYS3.ipa" 2>/dev/null | tee -a "${LOG_DIR}/50-app-build.log"
