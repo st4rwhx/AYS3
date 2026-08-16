@@ -109,6 +109,12 @@ jobs:
           SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
           ASSET="iPS3-v${VER}.ipa"
           cp AYS3.ipa "${ASSET}"
+          # Companion symbol map for crash symbolication (nm dump, gzipped).
+          SYMS=""
+          if [ -f ays3-symbols.txt.gz ]; then
+            SYMS="iPS3-v${VER}-symbols.txt.gz"
+            cp ays3-symbols.txt.gz "${SYMS}"
+          fi
 
           # One-time cleanup: retire the old rolling "v1.00" roulette release.
           gh release delete v1.00 --yes --cleanup-tag 2>/dev/null || true
@@ -123,8 +129,8 @@ jobs:
           initialise the PS3 core and read the resident-memory delta; any crash
           lands in the app's Documents/ips3_crash.txt + ips3_stage.txt (Files app)."
 
-          gh release create "$TAG" "${ASSET}" \
+          gh release create "$TAG" "${ASSET}" ${SYMS} \
             --title "iPS3 v${VER} (RAM probe · build #${{ github.run_number }})" \
             --notes "$NOTES" \
             --latest
-          echo "Released ${TAG} with ${ASSET}"
+          echo "Released ${TAG} with ${ASSET} ${SYMS}"

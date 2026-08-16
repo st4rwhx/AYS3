@@ -532,6 +532,12 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
       # asserts opening the main executable — and every mobile emu port (incl.
       # ARMSX3) strips before packaging. Standard, and shrinks it a lot.
       echo "  binary before strip: $(du -h "${APP}/ays3_app" 2>/dev/null | cut -f1)"
+      # Dump the symbol table (address-sorted) BEFORE stripping, so a stripped
+      # (installable) IPA still ships with a companion map to symbolicate crash
+      # backtraces (the crash reporter otherwise shows "curl_url_set + N" for
+      # every RPCS3 frame). Published next to the IPA on the GitHub Release.
+      nm -n "${APP}/ays3_app" 2>/dev/null | gzip -9 > "${ROOT}/ays3-symbols.txt.gz" || true
+      echo "  symbol map: $(du -h "${ROOT}/ays3-symbols.txt.gz" 2>/dev/null | cut -f1) (nm, for crash symbolication)"
       xcrun strip -x "${APP}/ays3_app" 2>/dev/null || strip -x "${APP}/ays3_app" 2>/dev/null || true
       echo "  binary after  strip: $(du -h "${APP}/ays3_app" 2>/dev/null | cut -f1)"
       cp "${ROOT}/app/ays3_Info.plist" "${APP}/Info.plist"
