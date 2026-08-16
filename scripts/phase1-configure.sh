@@ -214,6 +214,19 @@ HDR
     echo "  vm_native: mprotect+madvise commit/protect made non-fatal on iOS (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}") sites)"
   fi
 
+  # Wall #19: vm::init() maps a 32 GiB "hook" shared-memory region with
+  # `ensure(s_hook.map(g_hook_addr, ...))`. On iOS mapping a 32 GiB shm blows the
+  # memory budget (no GetMoreRam/entitlement available), and ensure() makes it
+  # fatal the moment Emu::Init() runs. The hook region only backs RPCS3's
+  # advanced R/W interception (default target is a ret-only stub) — not needed
+  # for bring-up. Make the map non-fatal so vm::init completes; if the map
+  # fails, hooks are simply unavailable. (Build is iOS-only, so no ifdef needed.)
+  local vmc="${RPCS3_DIR}/rpcs3/Emu/Memory/vm.cpp"
+  if [ -f "${vmc}" ] && ! grep -q 'AYS3 Wall #19' "${vmc}"; then
+    perl -pi -e 's{ensure\(s_hook\.map\(g_hook_addr, utils::protection::rw, true\)\);}{(void)(s_hook.map(g_hook_addr, utils::protection::rw, true)); /* AYS3 Wall #19: 32 GiB hook shm map non-fatal on iOS */}g' "${vmc}"
+    echo "  vm: 32 GiB hook shm map made non-fatal on iOS ($(grep -c 'AYS3 Wall #19' "${vmc}") site)"
+  fi
+
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
   # boot subgraph on demand) AND provides the Emu<->app seam via ays3_seam.cpp,
   # so it links WITHOUT dynamic_lookup — a strict test that the seam is complete.
