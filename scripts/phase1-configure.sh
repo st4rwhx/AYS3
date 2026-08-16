@@ -190,20 +190,25 @@ SHIM
   local vmn="${RPCS3_DIR}/rpcs3/util/vm_native.cpp"
   if [ -f "${vmn}" ] && ! grep -q 'AYS3_MPROTECT_OR_MAP' "${vmn}"; then
     cat > "${WORK}/ays3_vm18.h" <<'HDR'
-// AYS3 Wall #18: on iOS, make RPCS3's mprotect-based commit/protect non-fatal,
-// falling back to a MAP_FIXED anonymous mapping when iOS rejects mprotect over
-// the huge MAP_NORESERVE reservation (ENOMEM). Elsewhere behaves exactly as the
-// original `ensure(::mprotect(...) != -1)`.
+// AYS3 Wall #18/#20: make RPCS3's memory reservation + commit fit iOS limits.
+//  (#20) Large PROT_READ|WRITE reservations FAIL on iOS (no extended-VA
+//        entitlement) -> memory_reserve returns null -> the JIT pool base is 0,
+//        so data allocs land at raw 0x40000000 and the SPU-runtime trampoline
+//        writes segfault at load. Fix: reserve NON-JIT regions as PROT_NONE
+//        (virtual, always succeeds); on-demand commit backs the sub-ranges.
+//  (#18) commit/protect mprotect is non-fatal with a MAP_FIXED fallback, and
+//        drops PROT_EXEC (iOS forbids W^X before a debugger JIT session — the
+//        trampoline CODE is written now, executed later). madvise is a no-op.
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
 #include <sys/mman.h>
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-#define AYS3_MPROTECT_OR_MAP(p, s, pr) do { if (::mprotect((p), (s), (pr)) != 0) { (void)::mmap((p), (s), (pr), MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0); } } while (0)
-// madvise on iOS is only a hint; MADV_WILLNEED pre-faults pages and blows the
-// memory ledger (ENOMEM). Make it non-fatal — pages fault in lazily on access.
+#define AYS3_RESERVE_PROT (jit_flag ? (PROT_READ | PROT_WRITE) : PROT_NONE)
+#define AYS3_MPROTECT_OR_MAP(p, s, pr) do { const int _apr = (pr) & ~PROT_EXEC; if (::mprotect((p), (s), _apr) != 0) { (void)::mmap((p), (s), _apr, MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0); } } while (0)
 #define AYS3_MADVISE(...) ((void)::madvise(__VA_ARGS__))
 #else
+#define AYS3_RESERVE_PROT (PROT_READ | PROT_WRITE)
 #define AYS3_MPROTECT_OR_MAP(p, s, pr) ensure(::mprotect((p), (s), (pr)) != -1)
 #define AYS3_MADVISE(...) ensure(::madvise(__VA_ARGS__) != -1)
 #endif
@@ -211,7 +216,10 @@ HDR
     cat "${WORK}/ays3_vm18.h" "${vmn}" > "${vmn}.tmp" && mv "${vmn}.tmp" "${vmn}"
     perl -pi -e 's{ensure\(::mprotect\((.*?), \+prot\) != -1\);}{AYS3_MPROTECT_OR_MAP($1, +prot);}g' "${vmn}"
     perl -pi -e 's{ensure\(::madvise\((.*?)\) != -1\);}{AYS3_MADVISE($1);}g' "${vmn}"
-    echo "  vm_native: mprotect+madvise commit/protect made non-fatal on iOS (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}") sites)"
+    # Wall #20: reserve non-JIT regions as PROT_NONE on iOS (the Apple ARM64
+    # reserve otherwise maps PROT_READ|WRITE, which iOS rejects at these sizes).
+    perl -pi -e 's{::mmap\(use_addr, size, PROT_READ \| PROT_WRITE, MAP_ANON \| MAP_PRIVATE \| jit_flag}{::mmap(use_addr, size, AYS3_RESERVE_PROT, MAP_ANON | MAP_PRIVATE | jit_flag}g' "${vmn}"
+    echo "  vm_native: iOS reserve->PROT_NONE ($(grep -c 'AYS3_RESERVE_PROT,' "${vmn}") site), mprotect/madvise non-fatal + no-EXEC (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}") sites)"
   fi
 
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
