@@ -261,7 +261,7 @@ if(AYS3_APP)
         ${CMAKE_CURRENT_SOURCE_DIR}/ays3_seam.cpp)
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ays3_ramprobe.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    target_link_libraries(ays3_app PRIVATE rpcs3_emu)
+    target_link_libraries(ays3_app PRIVATE rpcs3_emu "-framework AVFoundation")
     target_link_options(ays3_app PRIVATE "SHELL:-liconv")
     set_target_properties(ays3_app PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/ays3_Info.plist

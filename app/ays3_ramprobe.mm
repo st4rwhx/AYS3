@@ -18,6 +18,7 @@
 // pulled into the binary by referencing the RPCS3 global `Emu`.
 
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import <mach/mach.h>
 #import <os/proc.h>
 
@@ -183,6 +184,49 @@ static void ays3_stage(NSString* line)
 }
 @end
 
+// ---- Background keepalive (from the competitor's documented iOS trick) -------
+// iOS suspends the app the instant it leaves the foreground — e.g. while you
+// switch to StikDebug to grant JIT — which freezes every thread and shows a
+// black screen that is NOT a JIT hang, just a suspended process. Declaring the
+// "audio" background mode (Info.plist) AND holding an ACTIVE audio session keeps
+// the process running in the background. We play looping silence (volume 0) via
+// AVAudioPlayer from an in-memory WAV — no bundled asset needed.
+static AVAudioPlayer* g_ays3_keepalive;
+
+static NSData* ays3_silent_wav(void)
+{
+	const uint32_t sr = 8000, secs = 1, ch = 1, bits = 16;
+	const uint32_t dataLen = sr * secs * ch * (bits / 8);
+	const uint32_t byteRate = sr * ch * (bits / 8);
+	const uint16_t blockAlign = (uint16_t)(ch * (bits / 8));
+	NSMutableData* d = [NSMutableData data];
+	void (^u32)(uint32_t) = ^(uint32_t v){ [d appendBytes:&v length:4]; };
+	void (^u16)(uint16_t) = ^(uint16_t v){ [d appendBytes:&v length:2]; };
+	[d appendBytes:"RIFF" length:4];           u32(36 + dataLen);
+	[d appendBytes:"WAVE" length:4];
+	[d appendBytes:"fmt " length:4];           u32(16); u16(1); u16((uint16_t)ch);
+	u32(sr); u32(byteRate); u16(blockAlign); u16((uint16_t)bits);
+	[d appendBytes:"data" length:4];           u32(dataLen);
+	[d increaseLengthBy:dataLen];              // zero-filled = silence
+	return d;
+}
+
+static void ays3_audio_keepalive(void)
+{
+	NSError* err = nil;
+	AVAudioSession* s = [AVAudioSession sharedInstance];
+	[s setCategory:AVAudioSessionCategoryPlayback
+	   withOptions:AVAudioSessionCategoryOptionMixWithOthers error:&err];
+	[s setActive:YES error:&err];
+	g_ays3_keepalive = [[AVAudioPlayer alloc] initWithData:ays3_silent_wav() error:&err];
+	g_ays3_keepalive.numberOfLoops = -1;   // loop forever
+	g_ays3_keepalive.volume = 0.0f;        // silent, but the session stays active
+	[g_ays3_keepalive prepareToPlay];
+	[g_ays3_keepalive play];
+	ays3_stage([NSString stringWithFormat:@"audio keepalive: %@ (err=%@)",
+		g_ays3_keepalive.isPlaying ? @"playing" : @"NOT playing", err ? err.localizedDescription : @"none"]);
+}
+
 @interface AYS3AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow* window;
 @end
@@ -191,6 +235,7 @@ static void ays3_stage(NSString* line)
 - (BOOL)application:(UIApplication*)application
 	didFinishLaunchingWithOptions:(NSDictionary*)launchOptions
 {
+	ays3_audio_keepalive();   // stay alive in background (StikDebug handshake)
 	self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 	self.window.rootViewController = [[AYS3ViewController alloc] init];
 	[self.window makeKeyAndVisible];
