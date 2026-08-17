@@ -28,6 +28,12 @@
 #import <string.h>
 #import <errno.h>
 #import <libkern/OSCacheControl.h>   // sys_icache_invalidate
+#import <sys/sysctl.h>               // P_TRACED debugger detection
+#import <unistd.h>                   // getpid
+
+#ifndef P_TRACED
+#define P_TRACED 0x00000800
+#endif
 
 // Minimal seam-style declaration: enough to CALL Emulator::Init() on the real
 // global. The real object AND the real code live in rpcs3_emu.a; we only need
@@ -75,23 +81,27 @@ static void ays3_stage(NSString* line)
 //
 // This is the single wall between "Emu::Init runs" (proven) and "a game runs":
 // RPCS3 recompiles PPU/SPU bytecode into ARM64 at runtime and JUMPS to it. On
-// iOS that memory is born non-executable unless EITHER the app carries the
-// dynamic-codesigning entitlement (SideStore's free tier strips it) OR a
-// debugger is attached (StikDebug, via get-task-allow). This probe writes the
-// most trivial possible function — `mov w0,#42; ret` — into runtime memory
-// three different ways and calls it. If any strategy returns 42, that path
-// gives us executable JIT memory on THIS device/signing combo. Each attempt is
-// fenced by sigsetjmp so a fault in one strategy is caught and reported instead
-// of taking the app down, letting all three run in a single sideload.
+// iOS that memory is born non-executable unless a debugger blesses it.
 //
-//   Strategy 0: MAP_JIT page + pthread_jit_write_protect_np(0/1) toggle
-//               (Apple's sanctioned W^X JIT path — what a debugger unlocks)
-//   Strategy 1: plain PROT_READ|WRITE|EXEC mmap (RWX, no MAP_JIT)
-//               (works when the process is allowed raw executable pages)
-//   Strategy 2: RW mmap → mprotect(RX) after writing (deferred-exec path)
+// StikDebug's "utm-dolphin" script is COOPERATIVE, not transparent — the crash
+// log proved it. It does NOT make all memory executable; it attaches, then
+// spins `c` waiting for the app to execute `brk #0x69` with x0=address and
+// x1=size. On that trap it calls prepare_memory_region(x0,x1) — flipping ONLY
+// that region to executable via the debug port — advances pc past the brk, and
+// detaches (the script does attach(1): one region, then it's gone). Our earlier
+// probe never issued that trap; it jumped into a non-exec page, faulted, the
+// script saw our `mov w0,#42` (not a brk 0x69), did `c`, and re-faulted forever
+// (the "748" loop). This version speaks the protocol:
+//
+//   1. mmap a plain RW region and write `mov w0,#42; ret` while it is still RW
+//   2. execute `brk #0x69` (x0=region, x1=size) from our executable __TEXT —
+//      utm-dolphin catches it and makes the region executable
+//   3. flush icache and CALL the region → returns 42 iff the bless worked
+//
+// Every step is fenced by sigsetjmp: if no debugger is attached the brk raises
+// SIGTRAP (caught → "not intercepted"); if the region is still non-exec the
+// call faults (caught → "call faulted"). One tap, one clear verdict, no hang.
 // ---------------------------------------------------------------------------
-
-typedef void (*ays3_jit_wp_fn)(int);
 
 static sigjmp_buf            g_ays3_jmp;
 static volatile sig_atomic_t g_ays3_sig;
@@ -113,104 +123,108 @@ static const char* ays3_signame(int s)
 	}
 }
 
-// Build & run the trivial JIT function via one strategy; one-line verdict → buf.
-static void ays3_jit_strategy(int strategy, char* buf, size_t buflen)
+// Is a debugger (StikDebug's debugserver) attached to us right now?
+static bool ays3_is_debugged(void)
 {
-	const size_t sz = 16384;                       // one iOS 16 KB page
-	int   flags = MAP_ANON | MAP_PRIVATE;
-	int   prot  = PROT_READ | PROT_WRITE;
-	const bool useJit = (strategy == 0);
-#ifdef MAP_JIT
-	if (useJit) flags |= MAP_JIT;
-#endif
-	if (strategy == 1) prot |= PROT_EXEC;          // raw RWX
-
-	void* mem = mmap(NULL, sz, prot, flags, -1, 0);
-	if (mem == MAP_FAILED) {
-		snprintf(buf, buflen, "mmap FAILED errno=%d (%s)", errno, strerror(errno));
-		return;
-	}
-
-	ays3_jit_wp_fn wp =
-		(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
-
-	if (useJit && wp) wp(0);                        // → writable
-
-	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */,
-							   0xd65f03c0u /* ret        */ };
-
-	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-		memcpy(mem, code, sizeof(code));
-	} else {
-		snprintf(buf, buflen, "WRITE faulted %s", ays3_signame((int)g_ays3_sig));
-		munmap(mem, sz);
-		return;
-	}
-
-	if (useJit && wp) wp(1);                        // → executable
-	if (strategy == 2) {
-		if (mprotect(mem, sz, PROT_READ | PROT_EXEC) != 0) {
-			snprintf(buf, buflen, "mprotect RX FAILED errno=%d (%s)", errno, strerror(errno));
-			munmap(mem, sz);
-			return;
-		}
-	}
-	sys_icache_invalidate(mem, sizeof(code));
-
-	int (*fn)(void) = (int (*)(void))mem;
-	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-		const int r = fn();
-		if (r == 42) snprintf(buf, buflen, "OK ✓ returned 42 — EXECUTES");
-		else         snprintf(buf, buflen, "ran but returned %d (?)", r);
-	} else {
-		snprintf(buf, buflen, "CALL faulted %s", ays3_signame((int)g_ays3_sig));
-	}
-	munmap(mem, sz);
+	int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+	struct kinfo_proc info;
+	size_t sz = sizeof(info);
+	memset(&info, 0, sizeof(info));
+	if (sysctl(mib, 4, &info, &sz, NULL, 0) != 0) return false;
+	return (info.kp_proc.p_flag & P_TRACED) != 0;
 }
 
-// Run all three strategies under our own signal guards, restoring the seam's
-// handlers afterward. Returns a multi-line human summary.
+// The UTM/Dolphin cooperative-JIT handshake. Runs from our already-executable
+// __TEXT: pins x0=addr / x1=size and traps with `brk #0x69`. An attached
+// utm-dolphin StikDebug catches it, flips [addr, addr+size] to executable, and
+// advances pc past the brk so this returns normally. With no such debugger the
+// brk raises SIGTRAP, which the caller's guard catches.
+static void ays3_brk69(void* addr, unsigned long size)
+{
+	register void*         x0 asm("x0") = addr;
+	register unsigned long x1 asm("x1") = size;
+	__asm__ volatile("brk #0x69" : "+r"(x0), "+r"(x1) :: "memory");
+}
+
 static NSString* ays3_run_jit_probe(void)
 {
+	NSMutableString* out = [NSMutableString string];
+	const bool dbg = ays3_is_debugged();
+	[out appendFormat:@"debugger: %s\n", dbg ? "ATTACHED (P_TRACED) ✓" : "NONE"];
+
+#ifdef MAP_JIT
+	// Informational only (no execution): does MAP_JIT mmap even succeed on this
+	// signing? Success needs the dynamic-codesigning entitlement or a debugger.
+	void* jt = mmap(NULL, 16384, PROT_READ | PROT_WRITE,
+					MAP_ANON | MAP_PRIVATE | MAP_JIT, -1, 0);
+	[out appendFormat:@"MAP_JIT mmap: %s\n", jt == MAP_FAILED ? strerror(errno) : "ok"];
+	if (jt != MAP_FAILED) munmap(jt, 16384);
+#endif
+
+	const size_t sz = 16384;                        // one iOS 16 KB page
+	void* mem = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+	if (mem == MAP_FAILED) {
+		[out appendFormat:@"mmap RW FAILED: %s", strerror(errno)];
+		return out;
+	}
+
+	// Write the trivial function while the page is still plainly RW — no W^X.
+	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */, 0xd65f03c0u /* ret */ };
+	memcpy(mem, code, sizeof(code));
+
 	struct sigaction sa; memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = ays3_sig_handler;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;
-	struct sigaction old_bus, old_segv, old_ill, old_trap;
-	sigaction(SIGBUS,  &sa, &old_bus);
-	sigaction(SIGSEGV, &sa, &old_segv);
-	sigaction(SIGILL,  &sa, &old_ill);
-	sigaction(SIGTRAP, &sa, &old_trap);
+	struct sigaction o_trap, o_bus, o_segv, o_ill;
+	sigaction(SIGTRAP, &sa, &o_trap);
+	sigaction(SIGBUS,  &sa, &o_bus);
+	sigaction(SIGSEGV, &sa, &o_segv);
+	sigaction(SIGILL,  &sa, &o_ill);
 
-	char a[128] = {0}, b[128] = {0}, c[128] = {0};
-	ays3_jit_strategy(0, a, sizeof(a));
-	ays3_jit_strategy(1, b, sizeof(b));
-	ays3_jit_strategy(2, c, sizeof(c));
+	bool blessed = false, trapped = false;
+	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+		ays3_brk69(mem, (unsigned long)sz);   // ask utm-dolphin to bless [mem, mem+sz]
+		blessed = true;                       // returned → debugger advanced past brk
+	} else {
+		trapped = true;                       // brk #0x69 hit our SIGTRAP → not intercepted
+	}
 
-	sigaction(SIGBUS,  &old_bus,  NULL);
-	sigaction(SIGSEGV, &old_segv, NULL);
-	sigaction(SIGILL,  &old_ill,  NULL);
-	sigaction(SIGTRAP, &old_trap, NULL);
+	NSString* callResult = @"(not attempted)";
+	if (blessed) {
+		sys_icache_invalidate(mem, sizeof(code));
+		if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+			const int r = ((int (*)(void))mem)();
+			callResult = (r == 42)
+				? @"OK ✓ returned 42 — JIT EXECUTES 🎉"
+				: [NSString stringWithFormat:@"ran but returned %d (?)", r];
+		} else {
+			callResult = [NSString stringWithFormat:@"CALL faulted %s (region still non-exec)",
+						  ays3_signame((int)g_ays3_sig)];
+		}
+	}
 
-	// dynamic-codesigning present? (the other way to get JIT, no debugger)
-	ays3_jit_wp_fn wp =
-		(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
+	sigaction(SIGTRAP, &o_trap, NULL);
+	sigaction(SIGBUS,  &o_bus,  NULL);
+	sigaction(SIGSEGV, &o_segv, NULL);
+	sigaction(SIGILL,  &o_ill,  NULL);
+	munmap(mem, sz);
 
-	NSString* summary = [NSString stringWithFormat:
-		@"MAP_JIT+wp: %s\nRWX mmap : %s\nmprot RX : %s\nwp fn    : %s",
-		a, b, c, wp ? "present" : "absent"];
+	if (trapped)
+		[out appendString:@"brk #0x69: NOT intercepted (SIGTRAP)\n→ attach utm-dolphin StikDebug FIRST, then tap.\n  (attach(1) detaches after one bless — re-attach per tap)"];
+	else
+		[out appendFormat:@"brk #0x69: intercepted ✓ (region blessed)\ncall: %@", callResult];
 
 	ays3_stage([NSString stringWithFormat:@"JIT probe — %@",
-		[summary stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
+		[out stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
 
-	// Persist a dedicated result file for easy retrieval via Files.
 	NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
 	if (dirs.count) {
 		NSString* path = [dirs[0] stringByAppendingPathComponent:@"ips3_jit.txt"];
-		NSString* body = [NSString stringWithFormat:@"iPS3 JIT probe @ %@\n%@\n", [NSDate date], summary];
+		NSString* body = [NSString stringWithFormat:@"iPS3 JIT probe @ %@\n%@\n", [NSDate date], out];
 		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 	}
-	return summary;
+	return out;
 }
 
 @interface AYS3ViewController : UIViewController
