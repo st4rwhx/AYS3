@@ -144,8 +144,26 @@ jobs:
           initialise the PS3 core and read the resident-memory delta; any crash
           lands in the app's Documents/ips3_crash.txt + ips3_stage.txt (Files app)."
 
-          gh release create "$TAG" "${ASSET}" ${SYMS} \
-            --title "iPS3 v${VER} (RAM probe · build #${{ github.run_number }})" \
-            --notes "$NOTES" \
-            --latest
-          echo "Released ${TAG} with ${ASSET} ${SYMS}"
+          # The GitHub releases API intermittently 5xx's (503 "no server
+          # available"); a single-shot create then failed the whole run even
+          # though the IPA built fine. Retry the create, and on repeated API
+          # failure DON'T fail the job — the IPA is already uploaded as the
+          # AYS3-ramprobe-ipa artifact, so the build is still usable.
+          published=0
+          for i in 1 2 3 4 5; do
+            if gh release create "$TAG" "${ASSET}" ${SYMS} \
+                 --title "iPS3 v${VER} (RAM probe · build #${{ github.run_number }})" \
+                 --notes "$NOTES" \
+                 --latest; then
+              published=1; break
+            fi
+            echo "release create attempt $i failed (GitHub API flake?); retry in $((i*5))s"
+            # If a partial tag/release got created, clear it before retrying.
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+            sleep $((i*5))
+          done
+          if [ "$published" = 1 ]; then
+            echo "Released ${TAG} with ${ASSET} ${SYMS}"
+          else
+            echo "::warning::Release API unavailable after retries; IPA is still attached as the AYS3-ramprobe-ipa artifact for ${TAG}."
+          fi
