@@ -172,24 +172,50 @@ static void ays3_report_prot(const void* addr, char* buf, size_t n)
 		info.max_protection & VM_PROT_EXECUTE ? 'x' : '-');
 }
 
+// v3 — the DolphiniOS dual-mapping. v2 proved a single page cannot be both
+// writable-by-us and executable-validated (mprotect to r-x succeeded yet
+// executing still SIGBUS'd — pmap code-signing enforcement), and that
+// prepare_memory_region does not touch vm protection at all (pre==post
+// cur=rw-). So we mirror DolphiniOS: back one physical region with TWO virtual
+// aliases — an rw- alias we write code through, and a separate r-x alias we
+// execute. We hand the debugger the r-x ALIAS address to bless; writing through
+// the rw- alias lands in the same physical pages, so the r-x alias sees the
+// code without ever being writable itself.
 static NSString* ays3_run_jit_probe(void)
 {
 	NSMutableString* out = [NSMutableString string];
 	[out appendFormat:@"debugger: %s\n", ays3_is_debugged() ? "ATTACHED ✓" : "NONE"];
 
-	const size_t sz = 16384;                        // one iOS 16 KB page
-	void* mem = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-	if (mem == MAP_FAILED) {
-		[out appendFormat:@"mmap RW FAILED: %s", strerror(errno)];
+	const vm_map_t  task = mach_task_self();
+	const vm_size_t sz   = 16384;                   // one iOS 16 KB page
+
+	// 1) writable backing region
+	vm_address_t rw = 0;
+	kern_return_t kr = vm_allocate(task, &rw, sz, VM_FLAGS_ANYWHERE);
+	if (kr != KERN_SUCCESS) { [out appendFormat:@"vm_allocate kr=%d", (int)kr]; return out; }
+
+	// 2) second view of the SAME physical pages (shared, copy=FALSE)
+	vm_address_t rx = 0;
+	vm_prot_t cur = 0, max = 0;
+	kr = vm_remap(task, &rx, sz, 0, VM_FLAGS_ANYWHERE,
+				  task, rw, /*copy*/ FALSE, &cur, &max, VM_INHERIT_NONE);
+	if (kr != KERN_SUCCESS) {
+		[out appendFormat:@"vm_remap kr=%d", (int)kr];
+		vm_deallocate(task, rw, sz);
 		return out;
 	}
+	// 3) make the alias r-x (source max=rwx, so this is allowed)
+	kern_return_t kp = vm_protect(task, rx, sz, /*set_max*/ FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+	[out appendFormat:@"remap ok, protect(RX) kr=%d\n", (int)kp];
 
+	char p1[64], p2[64];
+	ays3_report_prot((void*)rw, p1, sizeof(p1));
+	ays3_report_prot((void*)rx, p2, sizeof(p2));
+	[out appendFormat:@"rw : %s\nrx : %s (pre)\n", p1, p2];
+
+	// write the trivial fn through the rw alias → lands in the shared pages
 	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */, 0xd65f03c0u /* ret */ };
-	memcpy(mem, code, sizeof(code));               // write while plainly RW
-
-	char pbuf[64];
-	ays3_report_prot(mem, pbuf, sizeof(pbuf));
-	[out appendFormat:@"pre : %s\n", pbuf];
+	memcpy((void*)rw, code, sizeof(code));
 
 	struct sigaction sa; memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = ays3_sig_handler;
@@ -203,63 +229,32 @@ static NSString* ays3_run_jit_probe(void)
 
 	bool trapped = false;
 	if (sigsetjmp(g_ays3_jmp, 1) == 0)
-		ays3_brk69(mem, (unsigned long)sz);        // one bless per attach (attach(1))
+		ays3_brk69((void*)rx, (unsigned long)sz);   // bless the R-X ALIAS
 	else
 		trapped = true;
 
-	NSString* win = nil;   // set to the winning strategy name once one returns 42
-
+	NSString* win = nil;
 	if (!trapped) {
-		ays3_report_prot(mem, pbuf, sizeof(pbuf));
-		[out appendFormat:@"post: %s\n", pbuf];     // ← what prepare_memory_region did
-
-		// Attempt 1 — call the blessed region as-is.
+		ays3_report_prot((void*)rx, p2, sizeof(p2));
+		[out appendFormat:@"rx : %s (post)\n", p2];
 		if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-			sys_icache_invalidate(mem, sizeof(code));
-			int r = ((int (*)(void))mem)();
-			if (r == 42) win = @"direct";
-			[out appendFormat:@"direct: %@\n", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+			sys_icache_invalidate((void*)rx, sizeof(code));
+			int r = ((int (*)(void))rx)();
+			if (r == 42) win = @"dual-map";
+			[out appendFormat:@"call rx: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
 		} else {
-			[out appendFormat:@"direct: fault %s\n", ays3_signame((int)g_ays3_sig)];
-		}
-
-		// Attempt 2 — flip to R-X ourselves (works iff prepare raised max-prot).
-		if (!win) {
-			if (mprotect(mem, sz, PROT_READ | PROT_EXEC) != 0) {
-				[out appendFormat:@"RX : mprotect errno=%d (%s)\n", errno, strerror(errno)];
-			} else if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-				sys_icache_invalidate(mem, sizeof(code));
-				int r = ((int (*)(void))mem)();
-				if (r == 42) win = @"RX";
-				[out appendFormat:@"RX : %@\n", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-			} else {
-				[out appendFormat:@"RX : fault %s\n", ays3_signame((int)g_ays3_sig)];
-			}
-		}
-
-		// Attempt 3 — RWX in place.
-		if (!win) {
-			if (mprotect(mem, sz, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-				[out appendFormat:@"RWX: mprotect errno=%d (%s)", errno, strerror(errno)];
-			} else if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-				memcpy(mem, code, sizeof(code));
-				sys_icache_invalidate(mem, sizeof(code));
-				int r = ((int (*)(void))mem)();
-				if (r == 42) win = @"RWX";
-				[out appendFormat:@"RWX: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-			} else {
-				[out appendFormat:@"RWX: fault %s", ays3_signame((int)g_ays3_sig)];
-			}
+			[out appendFormat:@"call rx: fault %s", ays3_signame((int)g_ays3_sig)];
 		}
 	} else {
-		[out appendString:@"brk #0x69: NOT intercepted — attach utm-dolphin FIRST, then tap (re-attach each tap)"];
+		[out appendString:@"brk #0x69: NOT intercepted — attach utm-dolphin FIRST then tap"];
 	}
 
 	sigaction(SIGTRAP, &o_trap, NULL);
 	sigaction(SIGBUS,  &o_bus,  NULL);
 	sigaction(SIGSEGV, &o_segv, NULL);
 	sigaction(SIGILL,  &o_ill,  NULL);
-	munmap(mem, sz);
+	vm_deallocate(task, rx, sz);
+	vm_deallocate(task, rw, sz);
 
 	if (win) [out appendFormat:@"\n\n★ JIT WORKS via %@ ★", win];
 
