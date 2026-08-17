@@ -130,6 +130,9 @@ jobs:
 
           # If a cross-repo release token is configured, publish to the external
           # releases repo with it; otherwise stay on this repo (safe fallback).
+          # Save THIS repo's own token before we (maybe) switch to the PAT, so we
+          # can still strip AYS3's own releases afterward.
+          SELF_TOKEN="${GH_TOKEN}"
           REPO_ARGS=""
           if [ -n "${RELEASE_TOKEN}" ]; then
             export GH_TOKEN="${RELEASE_TOKEN}"
@@ -155,11 +158,8 @@ jobs:
 
           # Deliberately generic — release notes are public and we don't
           # telegraph internals/fixes to onlookers. Just what a user needs.
-          NOTES="iPS3 v${VER}
-
-          Download **${ASSET}** below and sideload with SideStore / AltStore.
-          The on-screen version matches this tag, so you always know which
-          build you are running."
+          # Bare bones on purpose — just the version, nothing else.
+          NOTES="iPS3 v${VER}"
 
           # The GitHub releases API intermittently 5xx's (503 "no server
           # available"); a single-shot create then failed the whole run even
@@ -193,4 +193,18 @@ jobs:
                 done
           else
             echo "::warning::Release API unavailable after retries; IPA is still attached as the AYS3-ramprobe-ipa artifact for ${TAG}."
+          fi
+
+          # Releases now live in RELEASE_REPO (st4rwhx/iPS3). Once the IPA is
+          # safely published THERE, strip THIS dev repo of ALL its own releases +
+          # tags — using this repo's own token — so AYS3 carries no downloadable
+          # IPAs at all. Guarded on a successful external publish so we never
+          # leave zero releases anywhere.
+          if [ -n "${RELEASE_TOKEN}" ] && [ "$published" = 1 ]; then
+            GH_TOKEN="${SELF_TOKEN}" gh release list --limit 200 --json tagName -q '.[].tagName' 2>/dev/null \
+              | while read -r t; do
+                  [ -z "$t" ] && continue
+                  echo "purging AYS3 self-release $t"
+                  GH_TOKEN="${SELF_TOKEN}" gh release delete "$t" --yes --cleanup-tag 2>/dev/null || true
+                done
           fi
