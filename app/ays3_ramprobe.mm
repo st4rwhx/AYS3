@@ -114,6 +114,7 @@ static void ays3_sig_handler(int sig)
 	siglongjmp(g_ays3_jmp, 1);
 }
 
+__attribute__((unused))
 static const char* ays3_signame(int s)
 {
 	switch (s) {
@@ -177,16 +178,32 @@ static void ays3_report_prot(const void* addr, char* buf, size_t n)
 		info.max_protection & VM_PROT_EXECUTE ? 'x' : '-');
 }
 
-// v5 — the universal.js "jitcall" protocol (read from StikDebug source). v4
-// proved the ceiling: a non-entitled app can NEVER get executable memory on its
-// own (mmap MAP_JIT → EPERM; mprotect(...PROT_EXEC) silently strips X → r--;
-// vm_remap drops X from max). The debugger's 0x69 write only *validates* a page
-// that is already executable — which we can't produce. universal.js solves this
-// by having debugserver ALLOCATE the executable region for us (`_M<size>,rx`),
-// since debugserver holds the privilege we lack. So: ask for a region via
-// brk #0xf00d (x16=1, x0=0), then write our code and run it. Requires StikDebug's
-// script set to universal.js (utm-dolphin/maciOS can't allocate — they only
-// validate app-supplied exec memory, which we don't have).
+// Read the CURRENT and MAX vm protection bits of the page holding addr, without
+// touching the memory. This is how v6 stays fault-free under a debugger: we
+// consult protection before every access instead of storing/calling blind.
+static bool ays3_prot_bits(const void* a, int* cur, int* max)
+{
+	vm_address_t addr = (vm_address_t)a;
+	vm_size_t s = 0;
+	vm_region_basic_info_data_64_t info;
+	mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+	mach_port_t obj = MACH_PORT_NULL;
+	if (vm_region_64(mach_task_self(), &addr, &s, VM_REGION_BASIC_INFO_64,
+					 (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) {
+		*cur = 0; *max = 0; return false;
+	}
+	*cur = info.protection; *max = info.max_protection; return true;
+}
+
+// v6 — the universal.js jitcall, made FAULT-FREE. The StikDebug log proved two
+// things: (1) debugserver's `_M<size>,rx` hands back a READ+EXECUTE region (no
+// write), so v5's blind store into it faulted; (2) under a debugger, a hardware
+// fault is caught by debugserver and re-delivered forever — our sigsetjmp guard
+// never runs, the app just freezes. So v6 never touches memory it hasn't proven
+// accessible: it reads vm protection before every store and every call, flips
+// permissions with mprotect (which returns an error rather than faulting), and
+// re-checks. brk #0xf00d (x16=1, x0=0) asks the debugger to allocate; the guard
+// on that call only matters when NO debugger is attached (SIGTRAP → report).
 static NSString* ays3_run_jit_probe(void)
 {
 	NSMutableString* out = [NSMutableString string];
@@ -195,83 +212,62 @@ static NSString* ays3_run_jit_probe(void)
 	const unsigned long sz = 16384;                 // one iOS 16 KB page
 	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */, 0xd65f03c0u /* ret */ };
 
+	// Guard ONLY the brk: with no debugger it raises SIGTRAP (catchable); with a
+	// debugger, faults can't be caught here, so past this point we rely purely on
+	// protection checks and never execute anything that could fault.
 	struct sigaction sa; memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = ays3_sig_handler;
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = 0;
-	struct sigaction o_trap, o_bus, o_segv, o_ill;
+	sa.sa_handler = ays3_sig_handler; sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
+	struct sigaction o_trap;
 	sigaction(SIGTRAP, &sa, &o_trap);
-	sigaction(SIGBUS,  &sa, &o_bus);
-	sigaction(SIGSEGV, &sa, &o_segv);
-	sigaction(SIGILL,  &sa, &o_ill);
+	void* jit = NULL; bool trapped = false;
+	if (sigsetjmp(g_ays3_jmp, 1) == 0) jit = ays3_jit26_prepare(NULL, sz);
+	else trapped = true;
+	sigaction(SIGTRAP, &o_trap, NULL);
 
-	// Ask the debugger to allocate an executable region for us (x0 = NULL).
-	void* jit = NULL;
-	bool trapped = false;
-	if (sigsetjmp(g_ays3_jmp, 1) == 0)
-		jit = ays3_jit26_prepare(NULL, sz);
-	else
-		trapped = true;
-
-	NSString* win = nil;
 	if (trapped) {
-		[out appendString:@"brk #0xf00d: SIGTRAP — no universal.js debugger.\nSet StikDebug script = universal.js for iPS3, attach, then tap."];
+		[out appendString:@"brk #0xf00d: SIGTRAP — no universal.js debugger attached.\nAttach StikDebug (universal.js) first, then tap."];
 	} else if (jit == NULL || jit == (void*)0xE0000069ULL) {
-		[out appendFormat:@"prepare returned %p — wrong script.\nUse universal.js (NOT utm-dolphin/maciOS: they can't allocate).", jit];
+		[out appendFormat:@"prepare returned %p — wrong script (need universal.js).", jit];
 	} else {
-		char pbuf[64];
-		ays3_report_prot(jit, pbuf, sizeof(pbuf));
-		[out appendFormat:@"jit=%p\nalloc: %s\n", jit, pbuf];
+		uint32_t* fn = (uint32_t*)((char*)jit + 16);   // byte 0 holds the 0x69 marker
+		char pb[80]; ays3_report_prot(jit, pb, sizeof(pb));
+		[out appendFormat:@"jit=%p\nalloc: %s\n", jit, pb];
 
-		// Code at offset 16 (prepare_memory_region clobbers byte 0 with 0x69).
-		uint32_t* fn = (uint32_t*)((char*)jit + 16);
+		int cur = 0, max = 0; ays3_prot_bits(jit, &cur, &max);
 
-		// A) region may be directly writable (rwx) — try a plain store first.
-		bool wroteA = false;
-		if (sigsetjmp(g_ays3_jmp, 1) == 0) { fn[0] = code[0]; fn[1] = code[1]; wroteA = true; }
+		// 1) Make it writable WITHOUT faulting: only if it isn't already, and only
+		//    if max-prot allows it (mprotect returns an error otherwise, no fault).
+		if (!(cur & VM_PROT_WRITE) && (max & VM_PROT_WRITE)) {
+			int rc = mprotect(jit, sz, PROT_READ | PROT_WRITE);
+			ays3_prot_bits(jit, &cur, &max);
+			[out appendFormat:@"→RW rc=%d cur=%s\n", rc, (cur & VM_PROT_WRITE) ? "w✓" : "still no-w"];
+		}
 
-		if (wroteA) {
-			if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-				sys_icache_invalidate(fn, 8);
-				int r = ((int (*)(void))fn)();
-				if (r == 42) win = @"f00d-direct";
-				[out appendFormat:@"direct write; call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-			} else {
-				[out appendFormat:@"direct write; call fault %s", ays3_signame((int)g_ays3_sig)];
-			}
+		if (!(cur & VM_PROT_WRITE)) {
+			[out appendFormat:@"region NOT writable (max lacks W) — debugger gave rx-only; can't place code. %s", pb];
 		} else {
-			// B) rx-only region — flip to RW to write, back to RX to run.
-			[out appendString:@"not directly writable → mprotect RW…\n"];
-			if (mprotect(jit, sz, PROT_READ | PROT_WRITE) != 0) {
-				[out appendFormat:@"mprotect RW errno=%d (%s)", errno, strerror(errno)];
+			fn[0] = code[0]; fn[1] = code[1];          // verified writable → safe store
+
+			// 2) Make it executable WITHOUT faulting the call: flip to RX only if
+			//    needed, then re-check. Only CALL if cur genuinely has EXEC.
+			if (!(cur & VM_PROT_EXECUTE)) {
+				int rc = mprotect(jit, sz, PROT_READ | PROT_EXEC);
+				ays3_prot_bits(jit, &cur, &max);
+				[out appendFormat:@"→RX rc=%d\n", rc];
+			}
+			char pb2[80]; ays3_report_prot(jit, pb2, sizeof(pb2));
+			[out appendFormat:@"final: %s\n", pb2];
+
+			if (cur & VM_PROT_EXECUTE) {
+				sys_icache_invalidate(fn, 8);
+				int r = ((int (*)(void))fn)();         // verified executable → safe call
+				[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+				if (r == 42) [out appendString:@"\n\n★★★ JIT WORKS ★★★"];
 			} else {
-				bool wroteB = false;
-				if (sigsetjmp(g_ays3_jmp, 1) == 0) { fn[0] = code[0]; fn[1] = code[1]; wroteB = true; }
-				if (!wroteB) {
-					[out appendString:@"write still faulted after mprotect RW"];
-				} else {
-					int rc = mprotect(jit, sz, PROT_READ | PROT_EXEC);
-					ays3_report_prot(jit, pbuf, sizeof(pbuf));
-					[out appendFormat:@"mprotect RX=%d prot=%s\n", rc, pbuf];
-					if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-						sys_icache_invalidate(fn, 8);
-						int r = ((int (*)(void))fn)();
-						if (r == 42) win = @"f00d-mprotect";
-						[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-					} else {
-						[out appendFormat:@"call fault %s", ays3_signame((int)g_ays3_sig)];
-					}
-				}
+				[out appendString:@"cur lacks EXEC after write — iOS stripped X on the RW→RX flip (need MAP_JIT / pthread_jit_write_protect path)"];
 			}
 		}
 	}
-
-	sigaction(SIGTRAP, &o_trap, NULL);
-	sigaction(SIGBUS,  &o_bus,  NULL);
-	sigaction(SIGSEGV, &o_segv, NULL);
-	sigaction(SIGILL,  &o_ill,  NULL);
-
-	if (win) [out appendFormat:@"\n\n★ JIT WORKS via %@ ★", win];
 
 	ays3_stage([NSString stringWithFormat:@"JIT probe — %@",
 		[out stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
