@@ -54,5 +54,14 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- Lets the app detect / deep-link into StikDebug (the external process that
+	     attaches a debugserver to grant JIT). The competitor declares the same
+	     schemes; canOpenURL against them is how you offer a one-tap "enable JIT"
+	     hand-off instead of asking the user to switch apps by hand. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>stikjit</string>
+		<string>stikdebug</string>
+	</array>
 </dict>
 </plist>

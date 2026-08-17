@@ -21,6 +21,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <mach/mach.h>
 #import <os/proc.h>
+#import <sys/mman.h>
+#import <signal.h>
+#import <setjmp.h>
+#import <dlfcn.h>
+#import <string.h>
+#import <errno.h>
+#import <libkern/OSCacheControl.h>   // sys_icache_invalidate
 
 // Minimal seam-style declaration: enough to CALL Emulator::Init() on the real
 // global. The real object AND the real code live in rpcs3_emu.a; we only need
@@ -63,16 +70,161 @@ static void ays3_stage(NSString* line)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// JIT PROBE — does this process get to run code it wrote at runtime?
+//
+// This is the single wall between "Emu::Init runs" (proven) and "a game runs":
+// RPCS3 recompiles PPU/SPU bytecode into ARM64 at runtime and JUMPS to it. On
+// iOS that memory is born non-executable unless EITHER the app carries the
+// dynamic-codesigning entitlement (SideStore's free tier strips it) OR a
+// debugger is attached (StikDebug, via get-task-allow). This probe writes the
+// most trivial possible function — `mov w0,#42; ret` — into runtime memory
+// three different ways and calls it. If any strategy returns 42, that path
+// gives us executable JIT memory on THIS device/signing combo. Each attempt is
+// fenced by sigsetjmp so a fault in one strategy is caught and reported instead
+// of taking the app down, letting all three run in a single sideload.
+//
+//   Strategy 0: MAP_JIT page + pthread_jit_write_protect_np(0/1) toggle
+//               (Apple's sanctioned W^X JIT path — what a debugger unlocks)
+//   Strategy 1: plain PROT_READ|WRITE|EXEC mmap (RWX, no MAP_JIT)
+//               (works when the process is allowed raw executable pages)
+//   Strategy 2: RW mmap → mprotect(RX) after writing (deferred-exec path)
+// ---------------------------------------------------------------------------
+
+typedef void (*ays3_jit_wp_fn)(int);
+
+static sigjmp_buf            g_ays3_jmp;
+static volatile sig_atomic_t g_ays3_sig;
+
+static void ays3_sig_handler(int sig)
+{
+	g_ays3_sig = (sig_atomic_t)sig;
+	siglongjmp(g_ays3_jmp, 1);
+}
+
+static const char* ays3_signame(int s)
+{
+	switch (s) {
+		case SIGBUS:  return "SIGBUS";
+		case SIGSEGV: return "SIGSEGV";
+		case SIGILL:  return "SIGILL";
+		case SIGTRAP: return "SIGTRAP";
+		default:      return "sig";
+	}
+}
+
+// Build & run the trivial JIT function via one strategy; one-line verdict → buf.
+static void ays3_jit_strategy(int strategy, char* buf, size_t buflen)
+{
+	const size_t sz = 16384;                       // one iOS 16 KB page
+	int   flags = MAP_ANON | MAP_PRIVATE;
+	int   prot  = PROT_READ | PROT_WRITE;
+	const bool useJit = (strategy == 0);
+#ifdef MAP_JIT
+	if (useJit) flags |= MAP_JIT;
+#endif
+	if (strategy == 1) prot |= PROT_EXEC;          // raw RWX
+
+	void* mem = mmap(NULL, sz, prot, flags, -1, 0);
+	if (mem == MAP_FAILED) {
+		snprintf(buf, buflen, "mmap FAILED errno=%d (%s)", errno, strerror(errno));
+		return;
+	}
+
+	ays3_jit_wp_fn wp =
+		(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
+
+	if (useJit && wp) wp(0);                        // → writable
+
+	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */,
+							   0xd65f03c0u /* ret        */ };
+
+	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+		memcpy(mem, code, sizeof(code));
+	} else {
+		snprintf(buf, buflen, "WRITE faulted %s", ays3_signame((int)g_ays3_sig));
+		munmap(mem, sz);
+		return;
+	}
+
+	if (useJit && wp) wp(1);                        // → executable
+	if (strategy == 2) {
+		if (mprotect(mem, sz, PROT_READ | PROT_EXEC) != 0) {
+			snprintf(buf, buflen, "mprotect RX FAILED errno=%d (%s)", errno, strerror(errno));
+			munmap(mem, sz);
+			return;
+		}
+	}
+	sys_icache_invalidate(mem, sizeof(code));
+
+	int (*fn)(void) = (int (*)(void))mem;
+	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+		const int r = fn();
+		if (r == 42) snprintf(buf, buflen, "OK ✓ returned 42 — EXECUTES");
+		else         snprintf(buf, buflen, "ran but returned %d (?)", r);
+	} else {
+		snprintf(buf, buflen, "CALL faulted %s", ays3_signame((int)g_ays3_sig));
+	}
+	munmap(mem, sz);
+}
+
+// Run all three strategies under our own signal guards, restoring the seam's
+// handlers afterward. Returns a multi-line human summary.
+static NSString* ays3_run_jit_probe(void)
+{
+	struct sigaction sa; memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = ays3_sig_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	struct sigaction old_bus, old_segv, old_ill, old_trap;
+	sigaction(SIGBUS,  &sa, &old_bus);
+	sigaction(SIGSEGV, &sa, &old_segv);
+	sigaction(SIGILL,  &sa, &old_ill);
+	sigaction(SIGTRAP, &sa, &old_trap);
+
+	char a[128] = {0}, b[128] = {0}, c[128] = {0};
+	ays3_jit_strategy(0, a, sizeof(a));
+	ays3_jit_strategy(1, b, sizeof(b));
+	ays3_jit_strategy(2, c, sizeof(c));
+
+	sigaction(SIGBUS,  &old_bus,  NULL);
+	sigaction(SIGSEGV, &old_segv, NULL);
+	sigaction(SIGILL,  &old_ill,  NULL);
+	sigaction(SIGTRAP, &old_trap, NULL);
+
+	// dynamic-codesigning present? (the other way to get JIT, no debugger)
+	ays3_jit_wp_fn wp =
+		(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
+
+	NSString* summary = [NSString stringWithFormat:
+		@"MAP_JIT+wp: %s\nRWX mmap : %s\nmprot RX : %s\nwp fn    : %s",
+		a, b, c, wp ? "present" : "absent"];
+
+	ays3_stage([NSString stringWithFormat:@"JIT probe — %@",
+		[summary stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
+
+	// Persist a dedicated result file for easy retrieval via Files.
+	NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+	if (dirs.count) {
+		NSString* path = [dirs[0] stringByAppendingPathComponent:@"ips3_jit.txt"];
+		NSString* body = [NSString stringWithFormat:@"iPS3 JIT probe @ %@\n%@\n", [NSDate date], summary];
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	}
+	return summary;
+}
+
 @interface AYS3ViewController : UIViewController
 @end
 
 @implementation AYS3ViewController {
 	UILabel*  _label;
 	UIButton* _initBtn;
+	UIButton* _jitBtn;
 	NSDate*   _start;
 	double    _rssBefore;
 	double    _rssAfter;
 	NSString* _initState;   // "not called" | "running…" | "returned" | "crashed"
+	NSString* _jitState;    // "not run" | multi-line verdict
 }
 - (void)viewDidLoad
 {
@@ -82,6 +234,7 @@ static void ays3_stage(NSString* line)
 	_rssBefore = -1.0;
 	_rssAfter  = -1.0;
 	_initState = @"not called";
+	_jitState  = @"not run";
 
 	// If we got this far, static init did not abort — Wall #17 held.
 	ays3_stage(@"launched: static-init OK (Wall #17 held), core linked");
@@ -105,13 +258,26 @@ static void ays3_stage(NSString* line)
 	[_initBtn addTarget:self action:@selector(callInit) forControlEvents:UIControlEventTouchUpInside];
 	[self.view addSubview:_initBtn];
 
+	_jitBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+	_jitBtn.translatesAutoresizingMaskIntoConstraints = NO;
+	[_jitBtn setTitle:@"▶  Test JIT (run written code)" forState:UIControlStateNormal];
+	_jitBtn.titleLabel.font = [UIFont monospacedSystemFontOfSize:18.0 weight:UIFontWeightBold];
+	[_jitBtn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+	_jitBtn.backgroundColor = [UIColor colorWithRed:1.0 green:0.8 blue:0.3 alpha:1.0];
+	_jitBtn.layer.cornerRadius = 12.0;
+	_jitBtn.contentEdgeInsets = UIEdgeInsetsMake(14, 24, 14, 24);
+	[_jitBtn addTarget:self action:@selector(testJIT) forControlEvents:UIControlEventTouchUpInside];
+	[self.view addSubview:_jitBtn];
+
 	UILayoutGuide* g = self.view.safeAreaLayoutGuide;
 	[NSLayoutConstraint activateConstraints:@[
 		[_label.leadingAnchor  constraintEqualToAnchor:g.leadingAnchor  constant:16],
 		[_label.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-16],
-		[_label.centerYAnchor  constraintEqualToAnchor:g.centerYAnchor  constant:-40],
+		[_label.centerYAnchor  constraintEqualToAnchor:g.centerYAnchor  constant:-60],
 		[_initBtn.centerXAnchor constraintEqualToAnchor:g.centerXAnchor],
-		[_initBtn.topAnchor     constraintEqualToAnchor:_label.bottomAnchor constant:32],
+		[_initBtn.topAnchor     constraintEqualToAnchor:_label.bottomAnchor constant:28],
+		[_jitBtn.centerXAnchor  constraintEqualToAnchor:g.centerXAnchor],
+		[_jitBtn.topAnchor      constraintEqualToAnchor:_initBtn.bottomAnchor constant:14],
 	]];
 
 	// Touch the core global so it is definitely part of the resident image.
@@ -147,6 +313,7 @@ static void ays3_stage(NSString* line)
 		[s appendFormat:@"\nRSS %.1f → %.1f MB  (Δ %+.1f)",
 			_rssBefore, _rssAfter, _rssAfter - _rssBefore];
 	}
+	[s appendFormat:@"\n\nJIT:\n%@", _jitState];
 	_label.text = s;
 }
 
@@ -179,6 +346,29 @@ static void ays3_stage(NSString* line)
 		ays3_stage([NSString stringWithFormat:@"post-Init: returned OK, rss=%.1f MB (Δ %+.1f)",
 			self->_rssAfter, self->_rssAfter - self->_rssBefore]);
 		[self->_initBtn setTitle:@"Emu::Init() returned ✓" forState:UIControlStateNormal];
+		[self refresh];
+	});
+}
+
+// Run the JIT probe. If StikDebug is attached (debugserver on this PID), one of
+// the three strategies should return 42 — that is the green light to re-enable
+// RPCS3's real recompilers. If none does, the verdict lines say exactly where
+// each path died (mmap EPERM, write fault, call SIGBUS…), which tells us whether
+// the block is the entitlement, the signing, or the missing debugger.
+- (void)testJIT
+{
+	_jitBtn.enabled = NO;
+	_jitBtn.alpha = 0.4;
+	[_jitBtn setTitle:@"running JIT probe…" forState:UIControlStateNormal];
+	_jitState = @"running…";
+	[self refresh];
+
+	ays3_stage(@"JIT probe: starting (attach StikDebug BEFORE tapping if you want the debugger path)");
+
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+				   dispatch_get_main_queue(), ^{
+		self->_jitState = ays3_run_jit_probe();
+		[self->_jitBtn setTitle:@"JIT probe done ✓ (see label)" forState:UIControlStateNormal];
 		[self refresh];
 	});
 }
