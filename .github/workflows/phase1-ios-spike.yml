@@ -37,8 +37,23 @@ jobs:
 
       - name: Install build tools
         run: |
+          # Homebrew occasionally flakes on the hosted runner; a silent failure
+          # here used to surface much later as "CMake was unable to find Ninja"
+          # and abort the whole configure. Retry, then HARD-ASSERT the tools we
+          # actually need are on PATH so infra flakiness fails fast and obvious.
           brew update || true
-          brew install ninja nasm ccache || true
+          for i in 1 2 3; do
+            brew install ninja nasm ccache && break
+            echo "brew install attempt $i failed; retrying in $((i*5))s"; sleep $((i*5))
+          done
+          # Fallbacks in case a single formula is wedged.
+          command -v ninja >/dev/null || brew install ninja || true
+          command -v nasm  >/dev/null || brew install nasm  || true
+          echo "ninja: $(command -v ninja || echo MISSING)  ($(ninja --version 2>/dev/null || echo n/a))"
+          echo "nasm : $(command -v nasm  || echo MISSING)"
+          echo "ccache: $(command -v ccache || echo MISSING)"
+          # Ninja is non-negotiable — the iOS configure uses the Ninja generator.
+          command -v ninja >/dev/null || { echo "::error::Ninja missing after retries — Homebrew infra failure, not a code issue. Re-run this job."; exit 1; }
 
       - name: ccache cache (speeds up LLVM/core recompiles across runs)
         uses: actions/cache@v4
