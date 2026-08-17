@@ -230,6 +230,18 @@ HDR
     echo "  vm_native: iOS no-MAP_JIT ($(grep -c 'AYS3_MAP_JIT' "${vmn}") refs) + reserve->PROT_NONE ($(grep -c 'AYS3_RESERVE_PROT,' "${vmn}") site) + mprotect/madvise non-fatal/no-EXEC (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}"))"
   fi
 
+  # Wall #21: memory_reserve_4GiB places the vm base by scanning FIXED addresses
+  # (mmap uses use_addr only as a HINT, no MAP_FIXED). iOS ignores the hint
+  # (ASLR) so the returned ptr is never == the requested address, memory_reserve
+  # rejects every iteration, and the loop throws "Failed to reserve vm memory"
+  # (vm.cpp:39). RPCS3 stores the base pointer, so it needn't be a specific
+  # value — reserve at a kernel-chosen (64K-aligned) address instead.
+  local vmc="${RPCS3_DIR}/rpcs3/Emu/Memory/vm.cpp"
+  if [ -f "${vmc}" ] && ! grep -q 'AYS3 Wall #21' "${vmc}"; then
+    perl -pi -e 's{(^\t*for \(u64 addr = reinterpret_cast<u64>\(_addr\))}{\t\tif (auto _ap = utils::memory_reserve(size, nullptr, is_memory_mapping, false)) return static_cast<u8*>(_ap); /* AYS3 Wall #21: iOS kernel-chosen reserve (fixed hints ignored) */\n$1}' "${vmc}"
+    echo "  vm: memory_reserve_4GiB uses a kernel-chosen address on iOS ($(grep -c 'AYS3 Wall #21' "${vmc}") site)"
+  fi
+
   # Phase 2: a link probe that references the core `Emu` global (pulls the real
   # boot subgraph on demand) AND provides the Emu<->app seam via ays3_seam.cpp,
   # so it links WITHOUT dynamic_lookup — a strict test that the seam is complete.
