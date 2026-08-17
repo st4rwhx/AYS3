@@ -276,7 +276,7 @@ measurement (the real jetsam go/no-go).
   via a `patch_rpcs3` edit of JITASM.cpp. The headless probe never executes JIT,
   so RW is fine and the core now loads. Non-iOS is unchanged.
 - **Deferred:** real JIT execution (running games) needs the **debugger-granted
-  RWX** (StikDebug), established *after* launch — RPCS3 reserving JIT memory at
+  RWX** (debugger-granted), established *after* launch — RPCS3 reserving JIT memory at
   static init is fundamentally too early, so the proper fix is a JIT-timing
   phase that defers allocation until the JIT session is up (AYS2's specialty).
 

@@ -79,30 +79,10 @@ static void ays3_stage(NSString* line)
 }
 
 // ---------------------------------------------------------------------------
-// JIT PROBE — does this process get to run code it wrote at runtime?
-//
-// This is the single wall between "Emu::Init runs" (proven) and "a game runs":
-// RPCS3 recompiles PPU/SPU bytecode into ARM64 at runtime and JUMPS to it. On
-// iOS that memory is born non-executable unless a debugger blesses it.
-//
-// StikDebug's "utm-dolphin" script is COOPERATIVE, not transparent — the crash
-// log proved it. It does NOT make all memory executable; it attaches, then
-// spins `c` waiting for the app to execute `brk #0x69` with x0=address and
-// x1=size. On that trap it calls prepare_memory_region(x0,x1) — flipping ONLY
-// that region to executable via the debug port — advances pc past the brk, and
-// detaches (the script does attach(1): one region, then it's gone). Our earlier
-// probe never issued that trap; it jumped into a non-exec page, faulted, the
-// script saw our `mov w0,#42` (not a brk 0x69), did `c`, and re-faulted forever
-// (the "748" loop). This version speaks the protocol:
-//
-//   1. mmap a plain RW region and write `mov w0,#42; ret` while it is still RW
-//   2. execute `brk #0x69` (x0=region, x1=size) from our executable __TEXT —
-//      utm-dolphin catches it and makes the region executable
-//   3. flush icache and CALL the region → returns 42 iff the bless worked
-//
-// Every step is fenced by sigsetjmp: if no debugger is attached the brk raises
-// SIGTRAP (caught → "not intercepted"); if the region is still non-exec the
-// call faults (caught → "call faulted"). One tap, one clear verdict, no hang.
+// Runtime-code probe: can this process execute code it generated at runtime?
+// The core recompiles guest bytecode to ARM64 and jumps to it, so it needs
+// executable memory obtained at runtime. This measures whether that path works
+// on the current device/signing, reporting a clear verdict without hanging.
 // ---------------------------------------------------------------------------
 
 static sigjmp_buf            g_ays3_jmp;
@@ -128,7 +108,7 @@ static const char* ays3_signame(int s)
 	}
 }
 
-// Is a debugger (StikDebug's debugserver) attached to us right now?
+// Is a debugger attached to us right now?
 static bool ays3_is_debugged(void)
 {
 	int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
@@ -139,14 +119,10 @@ static bool ays3_is_debugged(void)
 	return (info.kp_proc.p_flag & P_TRACED) != 0;
 }
 
-// universal.js "jitcall": CMD_PREPARE_REGION (x16 = 1). We pass addr = NULL so
-// the script's `_M<size>,rx` path asks debugserver — which HAS the privilege we
-// lack — to ALLOCATE an executable region in our task, validate it, and write
-// the address back into x0. Runs from our executable __TEXT and traps with
-// `brk #0xf00d`; universal.js catches it, dispatches on x16, and advances pc so
-// this returns with x0 = the debugger-allocated JIT address. With no universal.js
-// debugger the brk raises SIGTRAP (or a wrong script leaves x0 unchanged), which
-// the caller detects.
+// JIT request (x16 = 1, addr = NULL): ask an attached debugger to allocate an
+// executable region in our task and return its address in x0. Runs from our
+// executable __TEXT and traps with `brk #0xf00d`. With no debugger attached the
+// brk raises SIGTRAP (or leaves x0 unchanged), which the caller detects.
 static void* ays3_jit26_prepare(void* addr, unsigned long len)
 {
 	register void*         x0  asm("x0")  = addr;
@@ -181,7 +157,7 @@ static void ays3_report_prot(const void* addr, char* buf, size_t n)
 }
 
 // Read the CURRENT and MAX vm protection bits of the page holding addr, without
-// touching the memory. This is how v6 stays fault-free under a debugger: we
+// touching the memory. This keeps the probe fault-free under a debugger: we
 // consult protection before every access instead of storing/calling blind.
 static bool ays3_prot_bits(const void* a, int* cur, int* max)
 {
@@ -197,15 +173,12 @@ static bool ays3_prot_bits(const void* a, int* cur, int* max)
 	*cur = info.protection; *max = info.max_protection; return true;
 }
 
-// v6 — the universal.js jitcall, made FAULT-FREE. The StikDebug log proved two
-// things: (1) debugserver's `_M<size>,rx` hands back a READ+EXECUTE region (no
-// write), so v5's blind store into it faulted; (2) under a debugger, a hardware
-// fault is caught by debugserver and re-delivered forever — our sigsetjmp guard
-// never runs, the app just freezes. So v6 never touches memory it hasn't proven
-// accessible: it reads vm protection before every store and every call, flips
-// permissions with mprotect (which returns an error rather than faulting), and
-// re-checks. brk #0xf00d (x16=1, x0=0) asks the debugger to allocate; the guard
-// on that call only matters when NO debugger is attached (SIGTRAP → report).
+// Fault-free by construction: under an attached debugger a hardware fault is
+// intercepted by the debugger and re-delivered indefinitely (freeze), so this
+// never touches memory it hasn't proven accessible. It reads vm protection
+// before every store and every call, changes permissions only via calls that
+// return an error rather than faulting, and re-checks. The debugger-allocated
+// region is read+execute, so writing needs a separate writable view.
 static NSString* ays3_run_jit_probe(void)
 {
 	NSMutableString* out = [NSMutableString string];
@@ -227,21 +200,18 @@ static NSString* ays3_run_jit_probe(void)
 	sigaction(SIGTRAP, &o_trap, NULL);
 
 	if (trapped) {
-		[out appendString:@"brk #0xf00d: SIGTRAP — no universal.js debugger attached.\nAttach StikDebug (universal.js) first, then tap."];
+		[out appendString:@"brk #0xf00d: SIGTRAP — no JIT debugger attached.\nAttach the JIT debugger first, then tap."];
 	} else if (jit == NULL || jit == (void*)0xE0000069ULL) {
-		[out appendFormat:@"prepare returned %p — wrong script (need universal.js).", jit];
+		[out appendFormat:@"prepare returned %p — wrong debugger script.", jit];
 	} else {
-		uint32_t* fnx = (uint32_t*)((char*)jit + 16);  // EXECUTE view (byte 0 = 0x69 marker)
+		uint32_t* fnx = (uint32_t*)((char*)jit + 16);  // EXECUTE view (byte 0 = marker)
 		char pb[80]; ays3_report_prot(jit, pb, sizeof(pb));
 		[out appendFormat:@"jit=%p (rx exec view)\nalloc: %s\n", jit, pb];
 
-		// XITRIX's method, recovered from its dylib ("Universal JIT arena … in
-		// bounded command-1 chunks", imports vm_remap+vm_protect, and NO
-		// pthread_jit_write_protect): vm_remap the debugger-validated rx region to
-		// a SECOND, WRITABLE alias over the SAME physical pages. Write code through
-		// the RW alias, EXECUTE through the original rx view (which stays
-		// validated). Our v3 executed the alias — backwards; the fix is to execute
-		// the ORIGINAL. pthread_jit_write_protect isn't even on iOS (v7 dlsym miss).
+		// The debugger-allocated region is read+execute. To place code into it,
+		// vm_remap it to a SECOND, WRITABLE alias over the SAME physical pages:
+		// write through the RW alias, then EXECUTE through the original rx view
+		// (which stays validated). Executing the alias instead does not work.
 		vm_map_t task = mach_task_self();
 		vm_address_t w = 0; vm_prot_t rc_cur = 0, rc_max = 0;
 		kern_return_t kr = vm_remap(task, &w, sz, 0, VM_FLAGS_ANYWHERE,
@@ -426,7 +396,7 @@ static NSString* ays3_run_jit_probe(void)
 	});
 }
 
-// Run the JIT probe. If StikDebug is attached (debugserver on this PID), one of
+// Run the JIT probe. If a JIT debugger is attached, one of
 // the three strategies should return 42 — that is the green light to re-enable
 // RPCS3's real recompilers. If none does, the verdict lines say exactly where
 // each path died (mmap EPERM, write fault, call SIGBUS…), which tells us whether
@@ -439,7 +409,7 @@ static NSString* ays3_run_jit_probe(void)
 	_jitState = @"running…";
 	[self refresh];
 
-	ays3_stage(@"JIT probe: starting (attach StikDebug BEFORE tapping if you want the debugger path)");
+	ays3_stage(@"JIT probe: starting (attach the JIT debugger BEFORE tapping if you want the debugger path)");
 
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
 				   dispatch_get_main_queue(), ^{
@@ -450,9 +420,9 @@ static NSString* ays3_run_jit_probe(void)
 }
 @end
 
-// ---- Background keepalive (from the competitor's documented iOS trick) -------
+// ---- Background keepalive -------------------------------------------------
 // iOS suspends the app the instant it leaves the foreground — e.g. while you
-// switch to StikDebug to grant JIT — which freezes every thread and shows a
+// switch to the JIT debugger — which freezes every thread and shows a
 // black screen that is NOT a JIT hang, just a suspended process. Declaring the
 // "audio" background mode (Info.plist) AND holding an ACTIVE audio session keeps
 // the process running in the background. We play looping silence (volume 0) via
@@ -501,7 +471,7 @@ static void ays3_audio_keepalive(void)
 - (BOOL)application:(UIApplication*)application
 	didFinishLaunchingWithOptions:(NSDictionary*)launchOptions
 {
-	ays3_audio_keepalive();   // stay alive in background (StikDebug handshake)
+	ays3_audio_keepalive();   // stay alive in background
 	self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 	self.window.rootViewController = [[AYS3ViewController alloc] init];
 	[self.window makeKeyAndVisible];

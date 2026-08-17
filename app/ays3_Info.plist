@@ -47,17 +47,16 @@
 	</array>
 	<!-- Keep the process alive in the background. Without this, iOS suspends the
 	     app the moment it leaves the foreground — e.g. while you switch to
-	     StikDebug to grant JIT — freezing every thread (a black screen that is
+	     the JIT debugger — freezing every thread (a black screen that is
 	     NOT a JIT hang, just the whole process suspended). Paired with an active
 	     (silent) audio session in the app, the "audio" mode keeps it running. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 	</array>
-	<!-- Lets the app detect / deep-link into StikDebug (the external process that
-	     attaches a debugserver to grant JIT). The competitor declares the same
-	     schemes; canOpenURL against them is how you offer a one-tap "enable JIT"
-	     hand-off instead of asking the user to switch apps by hand. -->
+	<!-- Lets the app detect / deep-link into the external JIT debugger. canOpenURL
+	     against these schemes offers a one-tap "enable JIT" hand-off instead of
+	     asking the user to switch apps by hand. -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>stikjit</string>

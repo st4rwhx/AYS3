@@ -198,7 +198,7 @@ SHIM
   # the app dies before main() (confirmed on-device: JITASM.cpp:351, errno=1).
   # For the headless RAM probe (which NEVER runs the JIT) degrade executable JIT
   # allocations to plain RW on iOS so the core loads and we can measure memory.
-  # Real JIT execution needs the debugger-granted RWX (StikDebug) established
+  # Real JIT execution needs debugger-granted RWX established
   # after launch — deferred to a JIT-timing phase (AYS2's specialty).
   local ja="${RPCS3_DIR}/Utilities/JITASM.cpp"
   if [ -f "${ja}" ] && ! grep -q 'AYS3_JIT_DEGRADE' "${ja}"; then
@@ -206,6 +206,26 @@ SHIM
     perl -pi  -e 's/utils::protection::wx/AYS3_JIT_WX/g' "${ja}"
     perl -0pi -e 's/\A/\/\/ AYS3_JIT_DEGRADE\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n#define AYS3_JIT_RESERVE_EXEC false\n#define AYS3_JIT_WX utils::protection::rw\n#else\n#define AYS3_JIT_RESERVE_EXEC true\n#define AYS3_JIT_WX utils::protection::wx\n#endif\n/' "${ja}"
     echo "  JITASM: static-init exec JIT reserve degraded to RW on iOS ($(grep -c 'AYS3_JIT_WX' "${ja}") site(s))"
+  fi
+
+  # Wall #24 (JIT arena — real execution): the recompiler needs executable memory
+  # at runtime. On iOS a page cannot be both writable-by-us and executable, so we
+  # pre-allocate a debugger-backed executable arena for the CODE region and keep a
+  # writable alias over the same physical pages: writes go to the alias, execution
+  # to the original. Data stays plain RW. Slots into RPCS3's existing Apple ARM64
+  # "manual W^X" path in _add (it already skips asmjit's protect scope on Apple).
+  if [ -f "${ja}" ] && ! grep -q 'AYS3_JIT_ARENA' "${ja}"; then
+    # 1) arena module (prepended; self-contained iOS block)
+    perl -0pi -e 's/\A/\/\/ AYS3_JIT_ARENA\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n#include <mach\/mach.h>\n#include <mach\/vm_map.h>\n#include <libkern\/OSCacheControl.h>\n#include <sys\/mman.h>\n#include <cstdint>\nstatic uint8_t* g_ays3_jit_x = nullptr;\nstatic uint8_t* g_ays3_jit_data = nullptr;\nstatic long g_ays3_jit_off = 0;\nstatic unsigned long g_ays3_jit_sz = 0;\nstatic void* ays3_jit_req(void* a, unsigned long n){ register void* x0 asm("x0")=a; register unsigned long x1 asm("x1")=n; register unsigned long x16 asm("x16")=1; __asm__ volatile("brk #0xf00d":"+r"(x0):"r"(x1),"r"(x16):"memory"); return x0; }\nstatic void ays3_jit_arena_init(){\n  if (g_ays3_jit_x || g_ays3_jit_data) return;\n  const unsigned long sz = 0x4000000UL;\n  void* x = ays3_jit_req(nullptr, sz);\n  if (x \&\& x != (void*)0xE0000069UL){\n    vm_address_t w = 0; vm_prot_t c=0,m=0;\n    if (vm_remap(mach_task_self(), \&w, sz, 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)x, 0, \&c, \&m, VM_INHERIT_NONE) == KERN_SUCCESS){\n      vm_protect(mach_task_self(), (vm_address_t)w, sz, 0, VM_PROT_READ|VM_PROT_WRITE);\n      g_ays3_jit_x = (uint8_t*)x; g_ays3_jit_off = (long)((uint8_t*)w - (uint8_t*)x); g_ays3_jit_sz = sz;\n    }\n  }\n  void* d = ::mmap(nullptr, sz, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);\n  if (d != MAP_FAILED) g_ays3_jit_data = (uint8_t*)d;\n}\nstatic inline uint8_t* ays3_jit_w(uint8_t* p){ return (g_ays3_jit_x \&\& p>=g_ays3_jit_x \&\& p<g_ays3_jit_x+g_ays3_jit_sz) ? p+g_ays3_jit_off : p; }\n#endif\n/' "${ja}"
+    # 2) route code -> exec arena, data -> RW region
+    perl -0pi -e 's{(\tu8\* pointer = get_jit_memory\(\) \+ Off;)}{$1\n#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n\tays3_jit_arena_init();\n\tif (Off == 0 \&\& g_ays3_jit_x) pointer = g_ays3_jit_x;\n\telse if (Off != 0 \&\& g_ays3_jit_data) pointer = g_ays3_jit_data;\n#endif}g' "${ja}"
+    # 3) skip commit for the pre-committed exec arena (code region) on iOS
+    perl -0pi -e 's{(\t\tutils::memory_commit\(pointer \+ olda, newa - olda, Prot\);)}{#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n\t\tif (!(Off == 0 \&\& g_ays3_jit_x))\n#endif\n$1}g' "${ja}"
+    # 4) relax the get_jit_memory-relative range asserts on iOS (arena base differs)
+    perl -0pi -e 's{\tensure\(pointer \+ pos >= get_jit_memory\(\) \+ Off\);\n\tensure\(pointer \+ pos < get_jit_memory\(\) \+ Off \+ 0x40000000\);}{#if !(defined(__APPLE__) \&\& TARGET_OS_IPHONE)\n\tensure(pointer + pos >= get_jit_memory() + Off);\n\tensure(pointer + pos < get_jit_memory() + Off + 0x40000000);\n#endif}g' "${ja}"
+    # 5) redirect the code-write to the writable alias + flush i-cache on the exec view
+    perl -0pi -e 's{(\t\t\tstd::memcpy\(p \+ section->offset\(\), section->data\(\), section->bufferSize\(\)\);)}{#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n\t\t\tstd::memcpy(ays3_jit_w(p) + section->offset(), section->data(), section->bufferSize());\n\t\t\tsys_icache_invalidate(p + section->offset(), section->bufferSize());\n#else\n$1\n#endif}g' "${ja}"
+    echo "  JITASM Wall #24: JIT arena wired (arena=$(grep -c 'g_ays3_jit_x' "${ja}") refs, write-redirect=$(grep -c 'ays3_jit_w(p)' "${ja}"), commit-skip=$(grep -c 'Off == 0 && g_ays3_jit_x' "${ja}"))"
   fi
 
   # Wall #18: RPCS3's vm reserves ~56 GiB of virtual address at STATIC INIT
@@ -273,7 +293,7 @@ HDR
   # AND without the extended-virtual-addressing entitlement it caps the address
   # space (~4 GiB max reservation on this hardware), so the full 8/12/32 GiB
   # reserves fail and the loop throws "Failed to reserve vm memory". Confirmed by
-  # the competitor's own diary: it FALLS BACK to a smaller reservation "so the
+  # some iOS builds FALL BACK to a smaller reservation "so the
   # app opens" (emulation won't work without the entitlement, but Init runs).
   # Mirror that: reserve at a kernel-chosen address, halving the size on failure
   # down to 64 MiB, so the app opens instead of crashing at load.
