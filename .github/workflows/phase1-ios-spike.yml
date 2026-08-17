@@ -108,7 +108,15 @@ jobs:
       - name: Publish versioned release (new version every successful build)
         if: always()
         env:
+          # Default: publish to THIS repo with the built-in token.
           GH_TOKEN: ${{ github.token }}
+          # Cross-repo publish (releases-only public front door): set the
+          # RELEASE_TOKEN secret (a PAT with contents:write on RELEASE_REPO) and
+          # RELEASE_REPO below. When the secret is present we publish the IPA
+          # THERE instead — no source, just the release. When it's absent we fall
+          # back to this repo, so nothing breaks before it's configured.
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_REPO: "st4rwhx/iPS3"   # <-- the public releases-only repo (owner/name)
         run: |
           # No roulette. Every build that yields an IPA gets its OWN unique,
           # auto-incrementing release (v1.0.<run>), marked Latest, with the
@@ -118,6 +126,17 @@ jobs:
           if [ ! -f AYS3.ipa ]; then
             echo "::error::Build produced NO IPA — this build is broken. Nothing released this run; the newest working release stays Latest, but this run is marked failed."
             exit 1
+          fi
+
+          # If a cross-repo release token is configured, publish to the external
+          # releases repo with it; otherwise stay on this repo (safe fallback).
+          REPO_ARGS=""
+          if [ -n "${RELEASE_TOKEN}" ]; then
+            export GH_TOKEN="${RELEASE_TOKEN}"
+            REPO_ARGS="--repo ${RELEASE_REPO}"
+            echo "publishing to external releases repo: ${RELEASE_REPO}"
+          else
+            echo "RELEASE_TOKEN not set — publishing to this repo (fallback)"
           fi
           VER="1.0.${{ github.run_number }}"
           TAG="v${VER}"
@@ -149,7 +168,7 @@ jobs:
           # AYS3-ramprobe-ipa artifact, so the build is still usable.
           published=0
           for i in 1 2 3 4 5; do
-            if gh release create "$TAG" "${ASSET}" ${SYMS} \
+            if gh release create "$TAG" "${ASSET}" ${SYMS} ${REPO_ARGS} \
                  --title "iPS3 v${VER}" \
                  --notes "$NOTES" \
                  --latest; then
@@ -157,7 +176,7 @@ jobs:
             fi
             echo "release create attempt $i failed (GitHub API flake?); retry in $((i*5))s"
             # If a partial tag/release got created, clear it before retrying.
-            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+            gh release delete "$TAG" ${REPO_ARGS} --yes --cleanup-tag 2>/dev/null || true
             sleep $((i*5))
           done
           if [ "$published" = 1 ]; then
@@ -165,12 +184,12 @@ jobs:
             # Keep ONLY the newest release public: delete every other iPS3
             # release + its tag, so old IPAs are not left downloadable. Runs
             # only after the new one is safely published.
-            gh release list --limit 200 --json tagName -q '.[].tagName' 2>/dev/null \
+            gh release list --limit 200 ${REPO_ARGS} --json tagName -q '.[].tagName' 2>/dev/null \
               | while read -r t; do
                   [ -z "$t" ] && continue
                   [ "$t" = "$TAG" ] && continue
                   echo "retiring old release $t"
-                  gh release delete "$t" --yes --cleanup-tag 2>/dev/null || true
+                  gh release delete "$t" ${REPO_ARGS} --yes --cleanup-tag 2>/dev/null || true
                 done
           else
             echo "::warning::Release API unavailable after retries; IPA is still attached as the AYS3-ramprobe-ipa artifact for ${TAG}."
