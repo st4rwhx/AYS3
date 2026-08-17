@@ -134,15 +134,13 @@ jobs:
           # One-time cleanup: retire the old rolling "v1.00" roulette release.
           gh release delete v1.00 --yes --cleanup-tag 2>/dev/null || true
 
-          NOTES="iPS3 — RPCS3 PS3 emulator core on iOS (RAM-probe build).
+          # Deliberately generic — release notes are public and we don't
+          # telegraph internals/fixes to onlookers. Just what a user needs.
+          NOTES="iPS3 v${VER}
 
-          **Version ${VER}** · build #${{ github.run_number }} · commit ${SHORT} · built $(date -u '+%Y-%m-%d %H:%M UTC')
-
-          The app shows this same version on screen (iPS3 v${VER}) so you always
-          know which IPA you sideloaded. Download **${ASSET}** below and sideload
-          with SideStore / AltStore (they re-sign it). Tap ▶ Call Emu::Init() to
-          initialise the PS3 core and read the resident-memory delta; any crash
-          lands in the app's Documents/ips3_crash.txt + ips3_stage.txt (Files app)."
+          Download **${ASSET}** below and sideload with SideStore / AltStore.
+          The on-screen version matches this tag, so you always know which
+          build you are running."
 
           # The GitHub releases API intermittently 5xx's (503 "no server
           # available"); a single-shot create then failed the whole run even
@@ -152,7 +150,7 @@ jobs:
           published=0
           for i in 1 2 3 4 5; do
             if gh release create "$TAG" "${ASSET}" ${SYMS} \
-                 --title "iPS3 v${VER} (RAM probe · build #${{ github.run_number }})" \
+                 --title "iPS3 v${VER}" \
                  --notes "$NOTES" \
                  --latest; then
               published=1; break
@@ -164,6 +162,16 @@ jobs:
           done
           if [ "$published" = 1 ]; then
             echo "Released ${TAG} with ${ASSET} ${SYMS}"
+            # Keep ONLY the newest release public: delete every other iPS3
+            # release + its tag, so old IPAs are not left downloadable. Runs
+            # only after the new one is safely published.
+            gh release list --limit 200 --json tagName -q '.[].tagName' 2>/dev/null \
+              | while read -r t; do
+                  [ -z "$t" ] && continue
+                  [ "$t" = "$TAG" ] && continue
+                  echo "retiring old release $t"
+                  gh release delete "$t" --yes --cleanup-tag 2>/dev/null || true
+                done
           else
             echo "::warning::Release API unavailable after retries; IPA is still attached as the AYS3-ramprobe-ipa artifact for ${TAG}."
           fi
