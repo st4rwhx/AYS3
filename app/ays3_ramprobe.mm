@@ -108,6 +108,8 @@ static void ays3_stage(NSString* line)
 static sigjmp_buf            g_ays3_jmp;
 static volatile sig_atomic_t g_ays3_sig;
 
+typedef void (*ays3_jit_wp_fn)(int);   // pthread_jit_write_protect_np
+
 static void ays3_sig_handler(int sig)
 {
 	g_ays3_sig = (sig_atomic_t)sig;
@@ -233,38 +235,36 @@ static NSString* ays3_run_jit_probe(void)
 		char pb[80]; ays3_report_prot(jit, pb, sizeof(pb));
 		[out appendFormat:@"jit=%p\nalloc: %s\n", jit, pb];
 
-		int cur = 0, max = 0; ays3_prot_bits(jit, &cur, &max);
-
-		// 1) Make it writable WITHOUT faulting: only if it isn't already, and only
-		//    if max-prot allows it (mprotect returns an error otherwise, no fault).
-		if (!(cur & VM_PROT_WRITE) && (max & VM_PROT_WRITE)) {
-			int rc = mprotect(jit, sz, PROT_READ | PROT_WRITE);
-			ays3_prot_bits(jit, &cur, &max);
-			[out appendFormat:@"→RW rc=%d cur=%s\n", rc, (cur & VM_PROT_WRITE) ? "w✓" : "still no-w"];
-		}
-
-		if (!(cur & VM_PROT_WRITE)) {
-			[out appendFormat:@"region NOT writable (max lacks W) — debugger gave rx-only; can't place code. %s", pb];
+		// v6 proved mprotect is a TRAP here: dropping X via mprotect(RW) clamps
+		// max to rw- forever, so RX can never come back. alloc cur=r-x max=rwx is
+		// the MAP_JIT signature, whose non-destructive W^X toggle is
+		// pthread_jit_write_protect_np(0/1) — it flips the calling thread between
+		// writable and executable WITHOUT touching vm_map protection.
+		ays3_jit_wp_fn wp =
+			(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
+		if (!wp) {
+			[out appendString:@"pthread_jit_write_protect_np unavailable — cannot toggle W^X"];
 		} else {
-			fn[0] = code[0]; fn[1] = code[1];          // verified writable → safe store
+			// Breadcrumbs bracket the one still-risky store: if the region is NOT
+			// MAP_JIT, wp(0) is a no-op and this store faults (freeze). stage.txt
+			// then shows "pre-wp-store" without "post" — a clean signal of that.
+			ays3_stage(@"JIT: wp(0)+store (freezes here iff region is NOT MAP_JIT)");
+			wp(0);                                      // MAP_JIT → writable
+			fn[0] = code[0]; fn[1] = code[1];
+			wp(1);                                      // MAP_JIT → executable
+			sys_icache_invalidate(fn, 8);
+			ays3_stage(@"JIT: wp store survived → region IS MAP_JIT; calling");
 
-			// 2) Make it executable WITHOUT faulting the call: flip to RX only if
-			//    needed, then re-check. Only CALL if cur genuinely has EXEC.
-			if (!(cur & VM_PROT_EXECUTE)) {
-				int rc = mprotect(jit, sz, PROT_READ | PROT_EXEC);
-				ays3_prot_bits(jit, &cur, &max);
-				[out appendFormat:@"→RX rc=%d\n", rc];
-			}
 			char pb2[80]; ays3_report_prot(jit, pb2, sizeof(pb2));
-			[out appendFormat:@"final: %s\n", pb2];
+			[out appendFormat:@"after wp: %s\n", pb2];
 
+			int cur = 0, max = 0; ays3_prot_bits(jit, &cur, &max);
 			if (cur & VM_PROT_EXECUTE) {
-				sys_icache_invalidate(fn, 8);
-				int r = ((int (*)(void))fn)();         // verified executable → safe call
+				int r = ((int (*)(void))fn)();          // r-x + validated → safe call
 				[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
 				if (r == 42) [out appendString:@"\n\n★★★ JIT WORKS ★★★"];
 			} else {
-				[out appendString:@"cur lacks EXEC after write — iOS stripped X on the RW→RX flip (need MAP_JIT / pthread_jit_write_protect path)"];
+				[out appendString:@"after wp(1) cur still lacks EXEC — unexpected"];
 			}
 		}
 	}
