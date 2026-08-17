@@ -231,41 +231,49 @@ static NSString* ays3_run_jit_probe(void)
 	} else if (jit == NULL || jit == (void*)0xE0000069ULL) {
 		[out appendFormat:@"prepare returned %p — wrong script (need universal.js).", jit];
 	} else {
-		uint32_t* fn = (uint32_t*)((char*)jit + 16);   // byte 0 holds the 0x69 marker
+		uint32_t* fnx = (uint32_t*)((char*)jit + 16);  // EXECUTE view (byte 0 = 0x69 marker)
 		char pb[80]; ays3_report_prot(jit, pb, sizeof(pb));
-		[out appendFormat:@"jit=%p\nalloc: %s\n", jit, pb];
+		[out appendFormat:@"jit=%p (rx exec view)\nalloc: %s\n", jit, pb];
 
-		// v6 proved mprotect is a TRAP here: dropping X via mprotect(RW) clamps
-		// max to rw- forever, so RX can never come back. alloc cur=r-x max=rwx is
-		// the MAP_JIT signature, whose non-destructive W^X toggle is
-		// pthread_jit_write_protect_np(0/1) — it flips the calling thread between
-		// writable and executable WITHOUT touching vm_map protection.
-		ays3_jit_wp_fn wp =
-			(ays3_jit_wp_fn)dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
-		if (!wp) {
-			[out appendString:@"pthread_jit_write_protect_np unavailable — cannot toggle W^X"];
+		// XITRIX's method, recovered from its dylib ("Universal JIT arena … in
+		// bounded command-1 chunks", imports vm_remap+vm_protect, and NO
+		// pthread_jit_write_protect): vm_remap the debugger-validated rx region to
+		// a SECOND, WRITABLE alias over the SAME physical pages. Write code through
+		// the RW alias, EXECUTE through the original rx view (which stays
+		// validated). Our v3 executed the alias — backwards; the fix is to execute
+		// the ORIGINAL. pthread_jit_write_protect isn't even on iOS (v7 dlsym miss).
+		vm_map_t task = mach_task_self();
+		vm_address_t w = 0; vm_prot_t rc_cur = 0, rc_max = 0;
+		kern_return_t kr = vm_remap(task, &w, sz, 0, VM_FLAGS_ANYWHERE,
+									task, (vm_address_t)jit, FALSE,
+									&rc_cur, &rc_max, VM_INHERIT_NONE);
+		if (kr != KERN_SUCCESS) {
+			[out appendFormat:@"vm_remap FAILED kr=%d — no writable alias", (int)kr];
 		} else {
-			// Breadcrumbs bracket the one still-risky store: if the region is NOT
-			// MAP_JIT, wp(0) is a no-op and this store faults (freeze). stage.txt
-			// then shows "pre-wp-store" without "post" — a clean signal of that.
-			ays3_stage(@"JIT: wp(0)+store (freezes here iff region is NOT MAP_JIT)");
-			wp(0);                                      // MAP_JIT → writable
-			fn[0] = code[0]; fn[1] = code[1];
-			wp(1);                                      // MAP_JIT → executable
-			sys_icache_invalidate(fn, 8);
-			ays3_stage(@"JIT: wp store survived → region IS MAP_JIT; calling");
+			kern_return_t kp = vm_protect(task, w, sz, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+			int wc = 0, wm = 0; ays3_prot_bits((void*)w, &wc, &wm);
+			char wb[80]; ays3_report_prot((void*)w, wb, sizeof(wb));
+			[out appendFormat:@"alias w=%p protect kr=%d %s\n", (void*)w, (int)kp, wb];
 
-			char pb2[80]; ays3_report_prot(jit, pb2, sizeof(pb2));
-			[out appendFormat:@"after wp: %s\n", pb2];
-
-			int cur = 0, max = 0; ays3_prot_bits(jit, &cur, &max);
-			if (cur & VM_PROT_EXECUTE) {
-				int r = ((int (*)(void))fn)();          // r-x + validated → safe call
-				[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-				if (r == 42) [out appendString:@"\n\n★★★ JIT WORKS ★★★"];
+			if (!(wc & VM_PROT_WRITE)) {
+				[out appendString:@"alias NOT writable — vm_remap dual-map path unavailable"];
 			} else {
-				[out appendString:@"after wp(1) cur still lacks EXEC — unexpected"];
+				uint32_t* fnw = (uint32_t*)((char*)w + 16);   // RW alias, same phys pages
+				fnw[0] = code[0]; fnw[1] = code[1];           // verified writable → safe store
+				sys_icache_invalidate(fnx, 8);                // flush the EXECUTE view
+
+				int jc = 0, jm = 0; ays3_prot_bits(jit, &jc, &jm);
+				[out appendFormat:@"exec view: %s\n", (jc & VM_PROT_EXECUTE) ? "r-x ✓" : "lost X"];
+				if (jc & VM_PROT_EXECUTE) {
+					ays3_stage(@"JIT: dual-map written, calling exec view (freezes here iff validation lost)");
+					int r = ((int (*)(void))fnx)();           // execute the validated rx view
+					[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+					if (r == 42) [out appendString:@"\n\n★★★ JIT WORKS (vm_remap dual-map) ★★★"];
+				} else {
+					[out appendString:@"exec view lost X after alias write — unexpected"];
+				}
 			}
+			vm_deallocate(task, w, sz);
 		}
 	}
 
