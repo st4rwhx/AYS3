@@ -136,16 +136,21 @@ static bool ays3_is_debugged(void)
 	return (info.kp_proc.p_flag & P_TRACED) != 0;
 }
 
-// The UTM/Dolphin cooperative-JIT handshake. Runs from our already-executable
-// __TEXT: pins x0=addr / x1=size and traps with `brk #0x69`. An attached
-// utm-dolphin StikDebug catches it, flips [addr, addr+size] to executable, and
-// advances pc past the brk so this returns normally. With no such debugger the
-// brk raises SIGTRAP, which the caller's guard catches.
-static void ays3_brk69(void* addr, unsigned long size)
+// universal.js "jitcall": CMD_PREPARE_REGION (x16 = 1). We pass addr = NULL so
+// the script's `_M<size>,rx` path asks debugserver — which HAS the privilege we
+// lack — to ALLOCATE an executable region in our task, validate it, and write
+// the address back into x0. Runs from our executable __TEXT and traps with
+// `brk #0xf00d`; universal.js catches it, dispatches on x16, and advances pc so
+// this returns with x0 = the debugger-allocated JIT address. With no universal.js
+// debugger the brk raises SIGTRAP (or a wrong script leaves x0 unchanged), which
+// the caller detects.
+static void* ays3_jit26_prepare(void* addr, unsigned long len)
 {
-	register void*         x0 asm("x0") = addr;
-	register unsigned long x1 asm("x1") = size;
-	__asm__ volatile("brk #0x69" : "+r"(x0), "+r"(x1) :: "memory");
+	register void*         x0  asm("x0")  = addr;
+	register unsigned long x1  asm("x1")  = len;
+	register unsigned long x16 asm("x16") = 1;    // CMD_PREPARE_REGION
+	__asm__ volatile("brk #0xf00d" : "+r"(x0) : "r"(x1), "r"(x16) : "memory");
+	return x0;                                     // debugger-allocated JIT address
 }
 
 // Read back the CURRENT and MAX vm protection of the page containing addr, as
@@ -172,36 +177,23 @@ static void ays3_report_prot(const void* addr, char* buf, size_t n)
 		info.max_protection & VM_PROT_EXECUTE ? 'x' : '-');
 }
 
-// v4 — the ACTUAL StikDebug mechanism (read from its source). prepare_memory_
-// region sends debugserver, per 16 KB page, a `$M<addr>,1:69#` packet: it writes
-// ONE byte 0x69 to the page's first byte via the task port. That debugger write
-// is the software-breakpoint path — it marks the page as debugger-modified so it
-// bypasses code-signing and becomes executable. The prerequisite v2/v3 missed:
-// the page must ALREADY be mapped r-x when the debugger writes to it (writing to
-// a rw- page validates nothing). So: write our code at offset 16 (byte 0 gets
-// clobbered by the 0x69), mprotect the page to r-x FIRST, THEN brk #0x69 to let
-// the debugger validate it, then call offset 16. No dual mapping, no MAP_JIT.
+// v5 — the universal.js "jitcall" protocol (read from StikDebug source). v4
+// proved the ceiling: a non-entitled app can NEVER get executable memory on its
+// own (mmap MAP_JIT → EPERM; mprotect(...PROT_EXEC) silently strips X → r--;
+// vm_remap drops X from max). The debugger's 0x69 write only *validates* a page
+// that is already executable — which we can't produce. universal.js solves this
+// by having debugserver ALLOCATE the executable region for us (`_M<size>,rx`),
+// since debugserver holds the privilege we lack. So: ask for a region via
+// brk #0xf00d (x16=1, x0=0), then write our code and run it. Requires StikDebug's
+// script set to universal.js (utm-dolphin/maciOS can't allocate — they only
+// validate app-supplied exec memory, which we don't have).
 static NSString* ays3_run_jit_probe(void)
 {
 	NSMutableString* out = [NSMutableString string];
 	[out appendFormat:@"debugger: %s\n", ays3_is_debugged() ? "ATTACHED ✓" : "NONE"];
 
-	const size_t sz = 16384;                        // one iOS 16 KB page
-	uint8_t* mem = (uint8_t*)mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-	if (mem == MAP_FAILED) { [out appendFormat:@"mmap FAILED: %s", strerror(errno)]; return out; }
-
-	// Entry at offset 16; byte 0 is a sentinel the debugger overwrites with 0x69.
-	uint32_t* fn = (uint32_t*)(mem + 16);
-	fn[0] = 0x52800540u;   // mov w0,#42
-	fn[1] = 0xd65f03c0u;   // ret
-	mem[0] = 0x00;         // sentinel → becomes 0x69 iff the debugger wrote it
-
-	// Make it truly executable-mapped BEFORE the bless (plain mmap gives max=rwx).
-	int rc = mprotect(mem, sz, PROT_READ | PROT_EXEC);
-	char pbuf[64];
-	ays3_report_prot(mem, pbuf, sizeof(pbuf));
-	[out appendFormat:@"mprotect(RX)=%d%s\npre : %s\n",
-		rc, rc ? [[NSString stringWithFormat:@" (%s)", strerror(errno)] UTF8String] : "", pbuf];
+	const unsigned long sz = 16384;                 // one iOS 16 KB page
+	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */, 0xd65f03c0u /* ret */ };
 
 	struct sigaction sa; memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = ays3_sig_handler;
@@ -213,33 +205,71 @@ static NSString* ays3_run_jit_probe(void)
 	sigaction(SIGSEGV, &sa, &o_segv);
 	sigaction(SIGILL,  &sa, &o_ill);
 
+	// Ask the debugger to allocate an executable region for us (x0 = NULL).
+	void* jit = NULL;
 	bool trapped = false;
 	if (sigsetjmp(g_ays3_jmp, 1) == 0)
-		ays3_brk69(mem, (unsigned long)sz);         // debugger writes 0x69 → validates page
+		jit = ays3_jit26_prepare(NULL, sz);
 	else
 		trapped = true;
 
 	NSString* win = nil;
-	if (!trapped) {
-		ays3_report_prot(mem, pbuf, sizeof(pbuf));
-		[out appendFormat:@"post: %s  byte0=0x%02x\n", pbuf, mem[0]];   // 0x69 ⇒ bless landed
-		if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-			sys_icache_invalidate(fn, 8);
-			int r = ((int (*)(void))fn)();
-			if (r == 42) win = @"rx+bless";
-			[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
-		} else {
-			[out appendFormat:@"call: fault %s", ays3_signame((int)g_ays3_sig)];
-		}
+	if (trapped) {
+		[out appendString:@"brk #0xf00d: SIGTRAP — no universal.js debugger.\nSet StikDebug script = universal.js for iPS3, attach, then tap."];
+	} else if (jit == NULL || jit == (void*)0xE0000069ULL) {
+		[out appendFormat:@"prepare returned %p — wrong script.\nUse universal.js (NOT utm-dolphin/maciOS: they can't allocate).", jit];
 	} else {
-		[out appendString:@"brk #0x69: NOT intercepted — attach utm-dolphin FIRST then tap"];
+		char pbuf[64];
+		ays3_report_prot(jit, pbuf, sizeof(pbuf));
+		[out appendFormat:@"jit=%p\nalloc: %s\n", jit, pbuf];
+
+		// Code at offset 16 (prepare_memory_region clobbers byte 0 with 0x69).
+		uint32_t* fn = (uint32_t*)((char*)jit + 16);
+
+		// A) region may be directly writable (rwx) — try a plain store first.
+		bool wroteA = false;
+		if (sigsetjmp(g_ays3_jmp, 1) == 0) { fn[0] = code[0]; fn[1] = code[1]; wroteA = true; }
+
+		if (wroteA) {
+			if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+				sys_icache_invalidate(fn, 8);
+				int r = ((int (*)(void))fn)();
+				if (r == 42) win = @"f00d-direct";
+				[out appendFormat:@"direct write; call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+			} else {
+				[out appendFormat:@"direct write; call fault %s", ays3_signame((int)g_ays3_sig)];
+			}
+		} else {
+			// B) rx-only region — flip to RW to write, back to RX to run.
+			[out appendString:@"not directly writable → mprotect RW…\n"];
+			if (mprotect(jit, sz, PROT_READ | PROT_WRITE) != 0) {
+				[out appendFormat:@"mprotect RW errno=%d (%s)", errno, strerror(errno)];
+			} else {
+				bool wroteB = false;
+				if (sigsetjmp(g_ays3_jmp, 1) == 0) { fn[0] = code[0]; fn[1] = code[1]; wroteB = true; }
+				if (!wroteB) {
+					[out appendString:@"write still faulted after mprotect RW"];
+				} else {
+					int rc = mprotect(jit, sz, PROT_READ | PROT_EXEC);
+					ays3_report_prot(jit, pbuf, sizeof(pbuf));
+					[out appendFormat:@"mprotect RX=%d prot=%s\n", rc, pbuf];
+					if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+						sys_icache_invalidate(fn, 8);
+						int r = ((int (*)(void))fn)();
+						if (r == 42) win = @"f00d-mprotect";
+						[out appendFormat:@"call: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+					} else {
+						[out appendFormat:@"call fault %s", ays3_signame((int)g_ays3_sig)];
+					}
+				}
+			}
+		}
 	}
 
 	sigaction(SIGTRAP, &o_trap, NULL);
 	sigaction(SIGBUS,  &o_bus,  NULL);
 	sigaction(SIGSEGV, &o_segv, NULL);
 	sigaction(SIGILL,  &o_ill,  NULL);
-	munmap(mem, sz);
 
 	if (win) [out appendFormat:@"\n\n★ JIT WORKS via %@ ★", win];
 
