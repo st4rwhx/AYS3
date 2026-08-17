@@ -30,6 +30,8 @@
 #import <libkern/OSCacheControl.h>   // sys_icache_invalidate
 #import <sys/sysctl.h>               // P_TRACED debugger detection
 #import <unistd.h>                   // getpid
+#import <mach/vm_map.h>              // vm_region_64, vm_protect
+#import <mach/vm_region.h>           // vm_region_basic_info_data_64_t
 
 #ifndef P_TRACED
 #define P_TRACED 0x00000800
@@ -146,20 +148,34 @@ static void ays3_brk69(void* addr, unsigned long size)
 	__asm__ volatile("brk #0x69" : "+r"(x0), "+r"(x1) :: "memory");
 }
 
+// Read back the CURRENT and MAX vm protection of the page containing addr, as
+// "cur=rwx max=rwx". This is the key diagnostic: it shows exactly what the
+// debugger's prepare_memory_region did to the region (raise max-prot? set cur
+// executable? nothing?), which tells us whether an app-side mprotect can finish
+// the job or whether we need a Mach dual-mapping instead.
+static void ays3_report_prot(const void* addr, char* buf, size_t n)
+{
+	vm_address_t a = (vm_address_t)addr;
+	vm_size_t s = 0;
+	vm_region_basic_info_data_64_t info;
+	mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+	mach_port_t obj = MACH_PORT_NULL;
+	kern_return_t kr = vm_region_64(mach_task_self(), &a, &s, VM_REGION_BASIC_INFO_64,
+									(vm_region_info_t)&info, &cnt, &obj);
+	if (kr != KERN_SUCCESS) { snprintf(buf, n, "region? kr=%d", (int)kr); return; }
+	snprintf(buf, n, "cur=%c%c%c max=%c%c%c",
+		info.protection     & VM_PROT_READ    ? 'r' : '-',
+		info.protection     & VM_PROT_WRITE   ? 'w' : '-',
+		info.protection     & VM_PROT_EXECUTE ? 'x' : '-',
+		info.max_protection & VM_PROT_READ    ? 'r' : '-',
+		info.max_protection & VM_PROT_WRITE   ? 'w' : '-',
+		info.max_protection & VM_PROT_EXECUTE ? 'x' : '-');
+}
+
 static NSString* ays3_run_jit_probe(void)
 {
 	NSMutableString* out = [NSMutableString string];
-	const bool dbg = ays3_is_debugged();
-	[out appendFormat:@"debugger: %s\n", dbg ? "ATTACHED (P_TRACED) ✓" : "NONE"];
-
-#ifdef MAP_JIT
-	// Informational only (no execution): does MAP_JIT mmap even succeed on this
-	// signing? Success needs the dynamic-codesigning entitlement or a debugger.
-	void* jt = mmap(NULL, 16384, PROT_READ | PROT_WRITE,
-					MAP_ANON | MAP_PRIVATE | MAP_JIT, -1, 0);
-	[out appendFormat:@"MAP_JIT mmap: %s\n", jt == MAP_FAILED ? strerror(errno) : "ok"];
-	if (jt != MAP_FAILED) munmap(jt, 16384);
-#endif
+	[out appendFormat:@"debugger: %s\n", ays3_is_debugged() ? "ATTACHED ✓" : "NONE"];
 
 	const size_t sz = 16384;                        // one iOS 16 KB page
 	void* mem = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -168,9 +184,12 @@ static NSString* ays3_run_jit_probe(void)
 		return out;
 	}
 
-	// Write the trivial function while the page is still plainly RW — no W^X.
 	const uint32_t code[2] = { 0x52800540u /* mov w0,#42 */, 0xd65f03c0u /* ret */ };
-	memcpy(mem, code, sizeof(code));
+	memcpy(mem, code, sizeof(code));               // write while plainly RW
+
+	char pbuf[64];
+	ays3_report_prot(mem, pbuf, sizeof(pbuf));
+	[out appendFormat:@"pre : %s\n", pbuf];
 
 	struct sigaction sa; memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = ays3_sig_handler;
@@ -182,26 +201,58 @@ static NSString* ays3_run_jit_probe(void)
 	sigaction(SIGSEGV, &sa, &o_segv);
 	sigaction(SIGILL,  &sa, &o_ill);
 
-	bool blessed = false, trapped = false;
-	if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-		ays3_brk69(mem, (unsigned long)sz);   // ask utm-dolphin to bless [mem, mem+sz]
-		blessed = true;                       // returned → debugger advanced past brk
-	} else {
-		trapped = true;                       // brk #0x69 hit our SIGTRAP → not intercepted
-	}
+	bool trapped = false;
+	if (sigsetjmp(g_ays3_jmp, 1) == 0)
+		ays3_brk69(mem, (unsigned long)sz);        // one bless per attach (attach(1))
+	else
+		trapped = true;
 
-	NSString* callResult = @"(not attempted)";
-	if (blessed) {
-		sys_icache_invalidate(mem, sizeof(code));
+	NSString* win = nil;   // set to the winning strategy name once one returns 42
+
+	if (!trapped) {
+		ays3_report_prot(mem, pbuf, sizeof(pbuf));
+		[out appendFormat:@"post: %s\n", pbuf];     // ← what prepare_memory_region did
+
+		// Attempt 1 — call the blessed region as-is.
 		if (sigsetjmp(g_ays3_jmp, 1) == 0) {
-			const int r = ((int (*)(void))mem)();
-			callResult = (r == 42)
-				? @"OK ✓ returned 42 — JIT EXECUTES 🎉"
-				: [NSString stringWithFormat:@"ran but returned %d (?)", r];
+			sys_icache_invalidate(mem, sizeof(code));
+			int r = ((int (*)(void))mem)();
+			if (r == 42) win = @"direct";
+			[out appendFormat:@"direct: %@\n", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
 		} else {
-			callResult = [NSString stringWithFormat:@"CALL faulted %s (region still non-exec)",
-						  ays3_signame((int)g_ays3_sig)];
+			[out appendFormat:@"direct: fault %s\n", ays3_signame((int)g_ays3_sig)];
 		}
+
+		// Attempt 2 — flip to R-X ourselves (works iff prepare raised max-prot).
+		if (!win) {
+			if (mprotect(mem, sz, PROT_READ | PROT_EXEC) != 0) {
+				[out appendFormat:@"RX : mprotect errno=%d (%s)\n", errno, strerror(errno)];
+			} else if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+				sys_icache_invalidate(mem, sizeof(code));
+				int r = ((int (*)(void))mem)();
+				if (r == 42) win = @"RX";
+				[out appendFormat:@"RX : %@\n", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+			} else {
+				[out appendFormat:@"RX : fault %s\n", ays3_signame((int)g_ays3_sig)];
+			}
+		}
+
+		// Attempt 3 — RWX in place.
+		if (!win) {
+			if (mprotect(mem, sz, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+				[out appendFormat:@"RWX: mprotect errno=%d (%s)", errno, strerror(errno)];
+			} else if (sigsetjmp(g_ays3_jmp, 1) == 0) {
+				memcpy(mem, code, sizeof(code));
+				sys_icache_invalidate(mem, sizeof(code));
+				int r = ((int (*)(void))mem)();
+				if (r == 42) win = @"RWX";
+				[out appendFormat:@"RWX: %@", r == 42 ? @"42 🎉" : [NSString stringWithFormat:@"ran=%d", r]];
+			} else {
+				[out appendFormat:@"RWX: fault %s", ays3_signame((int)g_ays3_sig)];
+			}
+		}
+	} else {
+		[out appendString:@"brk #0x69: NOT intercepted — attach utm-dolphin FIRST, then tap (re-attach each tap)"];
 	}
 
 	sigaction(SIGTRAP, &o_trap, NULL);
@@ -210,10 +261,7 @@ static NSString* ays3_run_jit_probe(void)
 	sigaction(SIGILL,  &o_ill,  NULL);
 	munmap(mem, sz);
 
-	if (trapped)
-		[out appendString:@"brk #0x69: NOT intercepted (SIGTRAP)\n→ attach utm-dolphin StikDebug FIRST, then tap.\n  (attach(1) detaches after one bless — re-attach per tap)"];
-	else
-		[out appendFormat:@"brk #0x69: intercepted ✓ (region blessed)\ncall: %@", callResult];
+	if (win) [out appendFormat:@"\n\n★ JIT WORKS via %@ ★", win];
 
 	ays3_stage([NSString stringWithFormat:@"JIT probe — %@",
 		[out stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]]);
