@@ -1,0 +1,210 @@
+name: Phase 1 — RPCS3 iOS toolchain spike
+
+# AYS3 Phase 1: prove how far RPCS3 can be CONFIGURED for arm64-apple-ios.
+# This is a research spike — it is expected to fail somewhere, and the whole
+# point is to capture WHERE. Nothing here is required to pass; the logs are the
+# deliverable. Runs on a real Apple-Silicon macOS runner so we get genuine
+# compiler/toolchain feedback (not a blind Linux cross-attempt).
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/phase1-ios-spike.yml"
+      - "scripts/phase1-configure.sh"
+      - "cmake/**"
+      - "app/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # allow publishing the IPA to GitHub Releases
+
+jobs:
+  configure-spike:
+    runs-on: macos-15   # Apple Silicon (arm64) — Xcode 16 / newer libc++ for C++20/23 ranges
+    timeout-minutes: 180
+    steps:
+      - name: Checkout AYS3
+        uses: actions/checkout@v4
+
+      - name: Show runner environment
+        run: |
+          sw_vers || true
+          uname -a
+          sysctl -n hw.memsize | awk '{printf "RAM: %.1f GB\n", $1/1024/1024/1024}'
+          cmake --version || true
+          xcodebuild -version || true
+
+      - name: Install build tools
+        run: |
+          # Homebrew occasionally flakes on the hosted runner; a silent failure
+          # here used to surface much later as "CMake was unable to find Ninja"
+          # and abort the whole configure. Retry, then HARD-ASSERT the tools we
+          # actually need are on PATH so infra flakiness fails fast and obvious.
+          brew update || true
+          for i in 1 2 3; do
+            brew install ninja nasm ccache && break
+            echo "brew install attempt $i failed; retrying in $((i*5))s"; sleep $((i*5))
+          done
+          # Fallbacks in case a single formula is wedged.
+          command -v ninja >/dev/null || brew install ninja || true
+          command -v nasm  >/dev/null || brew install nasm  || true
+          echo "ninja: $(command -v ninja || echo MISSING)  ($(ninja --version 2>/dev/null || echo n/a))"
+          echo "nasm : $(command -v nasm  || echo MISSING)"
+          echo "ccache: $(command -v ccache || echo MISSING)"
+          # Ninja is non-negotiable — the iOS configure uses the Ninja generator.
+          command -v ninja >/dev/null || { echo "::error::Ninja missing after retries — Homebrew infra failure, not a code issue. Re-run this job."; exit 1; }
+
+      - name: ccache cache (speeds up LLVM/core recompiles across runs)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ays3-ccache-${{ github.sha }}
+          restore-keys: |
+            ays3-ccache-
+
+      - name: Run Phase 1 configure spike
+        continue-on-error: true
+        env:
+          RPCS3_REF: master
+          IOS_CMAKE_REF: "4.5.0"
+          IPS3_BUILD_NUM: ${{ github.run_number }}   # stamped into the bundle version
+        run: |
+          chmod +x scripts/phase1-configure.sh
+          ./scripts/phase1-configure.sh
+
+      - name: Summarize walls
+        if: always()
+        run: |
+          echo "### Phase 1 spike summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat spike-logs/01-rpcs3-sha.txt 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+          echo "--- iOS configure tail ---" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Configuring done|Generating done|iOS configure exit|CMake Error" spike-logs/20-configure-ios.log 2>/dev/null | tail -8 >> "$GITHUB_STEP_SUMMARY" || echo "(no ios cfg log)" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- iOS build errors (first 60) ---" >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "error:|fatal error|undefined symbol|ninja: build stopped|iOS build exit" spike-logs/30-build-ios.log 2>/dev/null | head -60 >> "$GITHUB_STEP_SUMMARY" || echo "(no ios build log — configure may have failed)" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- probe link result ---" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "probe link exit|ays3_probe LINKED|platform|minos|raw undefined|did NOT link|built for" spike-logs/40-link-probe.log 2>/dev/null | head -12 >> "$GITHUB_STEP_SUMMARY" || echo "(no probe log)" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- Emu<->app seam: RPCS3 C++ symbols AYS3 app must provide ---" >> "$GITHUB_STEP_SUMMARY"
+          head -60 spike-logs/41-app-seam.txt 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || echo "(no seam list — probe may not have linked)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload spike logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-spike-logs
+          path: spike-logs/
+          if-no-files-found: warn
+
+      - name: Upload AYS3 RAM-probe IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AYS3-ramprobe-ipa
+          path: AYS3.ipa
+          if-no-files-found: warn
+
+      - name: Publish versioned release (new version every successful build)
+        if: always()
+        env:
+          # Default: publish to THIS repo with the built-in token.
+          GH_TOKEN: ${{ github.token }}
+          # Cross-repo publish (releases-only public front door): set the
+          # RELEASE_TOKEN secret (a PAT with contents:write on RELEASE_REPO) and
+          # RELEASE_REPO below. When the secret is present we publish the IPA
+          # THERE instead — no source, just the release. When it's absent we fall
+          # back to this repo, so nothing breaks before it's configured.
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_REPO: "st4rwhx/iPS3"   # <-- the public releases-only repo (owner/name)
+        run: |
+          # No roulette. Every build that yields an IPA gets its OWN unique,
+          # auto-incrementing release (v1.0.<run>), marked Latest, with the
+          # version baked into the filename. A build that yields NO IPA fails
+          # LOUDLY (red job) instead of silently leaving an old release looking
+          # current — so "is this broken?" is never ambiguous again.
+          if [ ! -f AYS3.ipa ]; then
+            echo "::error::Build produced NO IPA — this build is broken. Nothing released this run; the newest working release stays Latest, but this run is marked failed."
+            exit 1
+          fi
+
+          # If a cross-repo release token is configured, publish to the external
+          # releases repo with it; otherwise stay on this repo (safe fallback).
+          # Save THIS repo's own token before we (maybe) switch to the PAT, so we
+          # can still strip AYS3's own releases afterward.
+          SELF_TOKEN="${GH_TOKEN}"
+          REPO_ARGS=""
+          if [ -n "${RELEASE_TOKEN}" ]; then
+            export GH_TOKEN="${RELEASE_TOKEN}"
+            REPO_ARGS="--repo ${RELEASE_REPO}"
+            echo "publishing to external releases repo: ${RELEASE_REPO}"
+          else
+            echo "RELEASE_TOKEN not set — publishing to this repo (fallback)"
+          fi
+          VER="1.0.${{ github.run_number }}"
+          TAG="v${VER}"
+          SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
+          ASSET="iPS3-v${VER}.ipa"
+          cp AYS3.ipa "${ASSET}"
+          # Companion symbol map for crash symbolication (nm dump, gzipped).
+          SYMS=""
+          if [ -f ays3-symbols.txt.gz ]; then
+            SYMS="iPS3-v${VER}-symbols.txt.gz"
+            cp ays3-symbols.txt.gz "${SYMS}"
+          fi
+
+          # One-time cleanup: retire the old rolling "v1.00" roulette release.
+          gh release delete v1.00 --yes --cleanup-tag 2>/dev/null || true
+
+          # Deliberately generic — release notes are public and we don't
+          # telegraph internals/fixes to onlookers. Just what a user needs.
+          # Bare bones on purpose — just the version, nothing else.
+          NOTES="iPS3 v${VER}"
+
+          # The GitHub releases API intermittently 5xx's (503 "no server
+          # available"); a single-shot create then failed the whole run even
+          # though the IPA built fine. Retry the create, and on repeated API
+          # failure DON'T fail the job — the IPA is already uploaded as the
+          # AYS3-ramprobe-ipa artifact, so the build is still usable.
+          published=0
+          for i in 1 2 3 4 5; do
+            if gh release create "$TAG" "${ASSET}" ${SYMS} ${REPO_ARGS} \
+                 --title "iPS3 v${VER}" \
+                 --notes "$NOTES" \
+                 --latest; then
+              published=1; break
+            fi
+            echo "release create attempt $i failed (GitHub API flake?); retry in $((i*5))s"
+            # If a partial tag/release got created, clear it before retrying.
+            gh release delete "$TAG" ${REPO_ARGS} --yes --cleanup-tag 2>/dev/null || true
+            sleep $((i*5))
+          done
+          if [ "$published" = 1 ]; then
+            echo "Released ${TAG} with ${ASSET} ${SYMS}"
+            # Keep ONLY the newest release public: delete every other iPS3
+            # release + its tag, so old IPAs are not left downloadable. Runs
+            # only after the new one is safely published.
+            gh release list --limit 200 ${REPO_ARGS} --json tagName -q '.[].tagName' 2>/dev/null \
+              | while read -r t; do
+                  [ -z "$t" ] && continue
+                  [ "$t" = "$TAG" ] && continue
+                  echo "retiring old release $t"
+                  gh release delete "$t" ${REPO_ARGS} --yes --cleanup-tag 2>/dev/null || true
+                done
+          else
+            echo "::warning::Release API unavailable after retries; IPA is still attached as the AYS3-ramprobe-ipa artifact for ${TAG}."
+          fi
+
+          # Releases now live in RELEASE_REPO (st4rwhx/iPS3). Once the IPA is
+          # safely published THERE, strip THIS dev repo of ALL its own releases +
+          # tags — using this repo's own token — so AYS3 carries no downloadable
+          # IPAs at all. Guarded on a successful external publish so we never
+          # leave zero releases anywhere.
+          if [ -n "${RELEASE_TOKEN}" ] && [ "$published" = 1 ]; then
+            GH_TOKEN="${SELF_TOKEN}" gh release list --limit 200 --json tagName -q '.[].tagName' 2>/dev/null \
+              | while read -r t; do
+                  [ -z "$t" ] && continue
+                  echo "purging AYS3 self-release $t"
+                  GH_TOKEN="${SELF_TOKEN}" gh release delete "$t" --yes --cleanup-tag 2>/dev/null || true
+                done
+          fi

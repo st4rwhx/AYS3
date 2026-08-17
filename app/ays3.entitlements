@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- RPCS3 reserves ~56 GiB of virtual address at load (g_base/exec/hook/stat).
+	     This entitlement gives the process the large virtual address space iOS
+	     otherwise caps, which is exactly what our vm_native ENOMEM needs. -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+	<!-- Raises the jetsam / physical memory ledger so the emulator can use far
+	     more resident RAM before iOS kills it. Same entitlement GetMoreRam
+	     applies; we declare it up front so any signer/tool can grant it. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+	<!-- A debugger (iOS 17.4+) enables JIT by attaching to this
+	     process by PID over an RSD tunnel. The kernel only lets a debugger
+	     attach to a task that carries get-task-allow, so without this the
+	     attach is refused and MAP_JIT stays non-executable. SideStore honors
+	     this entitlement on re-sign. This is the JIT unlock. -->
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+</dict>
+</plist>

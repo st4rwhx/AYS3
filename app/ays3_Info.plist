@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>ays3_app</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.ips3.ramprobe</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>iPS3</string>
+	<key>CFBundleDisplayName</key>
+	<string>iPS3 RAM</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.00</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>16.3</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- Keep the process alive in the background. Without this, iOS suspends the
+	     app the moment it leaves the foreground — e.g. while you switch to
+	     the JIT debugger — freezing every thread (a black screen that is
+	     NOT a JIT hang, just the whole process suspended). Paired with an active
+	     (silent) audio session in the app, the "audio" mode keeps it running. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!-- Lets the app detect / deep-link into the external JIT debugger. canOpenURL
+	     against these schemes offers a one-tap "enable JIT" hand-off instead of
+	     asking the user to switch apps by hand. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>stikjit</string>
+		<string>stikdebug</string>
+	</array>
+</dict>
+</plist>
