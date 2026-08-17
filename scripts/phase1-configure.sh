@@ -348,11 +348,36 @@ patch_rpcs3 2>&1 | tee "${LOG_DIR}/03-patches.log"
 mkdir -p "$(dirname "${TOOLCHAIN}")"
 if [ ! -f "${TOOLCHAIN}" ]; then
   echo "== fetching ios-cmake ${IOS_CMAKE_REF} =="
-  curl -fsSL -o "${TOOLCHAIN}" \
+  : > "${LOG_DIR}/02-toolchain-fetch.log"
+  # raw.githubusercontent.com occasionally 429s (rate limit); the old single-shot
+  # curl -f then left NO file and configure died with "Could not find toolchain
+  # file". Try the raw host with retries, then fall back to the jsdelivr CDN
+  # mirror (different infra, rarely throttled). A file <50 lines is a truncated/
+  # error body, not the real toolchain — treat it as a miss.
+  for url in \
     "https://raw.githubusercontent.com/leetal/ios-cmake/${IOS_CMAKE_REF}/ios.toolchain.cmake" \
-    2>&1 | tee "${LOG_DIR}/02-toolchain-fetch.log" || echo "toolchain fetch FAILED"
+    "https://raw.githubusercontent.com/leetal/ios-cmake/${IOS_CMAKE_REF}/ios.toolchain.cmake" \
+    "https://cdn.jsdelivr.net/gh/leetal/ios-cmake@${IOS_CMAKE_REF}/ios.toolchain.cmake" \
+    "https://cdn.jsdelivr.net/gh/leetal/ios-cmake@${IOS_CMAKE_REF}/ios.toolchain.cmake"; do
+    for i in 1 2 3; do
+      echo "try: ${url} (attempt ${i})" >> "${LOG_DIR}/02-toolchain-fetch.log"
+      if curl -fsSL --max-time 60 -o "${TOOLCHAIN}" "${url}" 2>>"${LOG_DIR}/02-toolchain-fetch.log" \
+         && [ "$(wc -l < "${TOOLCHAIN}")" -gt 50 ]; then
+        echo "toolchain OK from ${url}" >> "${LOG_DIR}/02-toolchain-fetch.log"
+        break 2
+      fi
+      rm -f "${TOOLCHAIN}"
+      sleep $((i*4))
+    done
+  done
 fi
-[ -f "${TOOLCHAIN}" ] && echo "toolchain: ${TOOLCHAIN} ($(wc -l < "${TOOLCHAIN}") lines)"
+if [ -f "${TOOLCHAIN}" ] && [ "$(wc -l < "${TOOLCHAIN}")" -gt 50 ]; then
+  echo "toolchain: ${TOOLCHAIN} ($(wc -l < "${TOOLCHAIN}") lines)"
+else
+  echo "::error::iOS toolchain download failed (raw.githubusercontent + jsdelivr all unavailable — infra flake, not a code issue). Re-run this job." \
+    | tee -a "${LOG_DIR}/02-toolchain-fetch.log"
+  exit 1
+fi
 
 # --- 2c. Stub librt.a: something in the link graph adds -lrt (Linux realtime
 # lib). On iOS clock_gettime/shm_open live in libSystem, so an empty arm64-iOS
