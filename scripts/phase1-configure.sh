@@ -209,6 +209,8 @@ SHIM
 #include <TargetConditionals.h>
 #endif
 #include <sys/mman.h>
+#include <cstdlib>
+#include <unistd.h>
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #define AYS3_MAP_JIT 0
 #define AYS3_RESERVE_PROT (jit_flag ? (PROT_READ | PROT_WRITE) : PROT_NONE)
@@ -227,7 +229,12 @@ HDR
     # Wall #20: reserve non-JIT regions as PROT_NONE on iOS (the Apple ARM64
     # reserve otherwise maps PROT_READ|WRITE, which iOS rejects at these sizes).
     perl -pi -e 's{::mmap\(use_addr, size, PROT_READ \| PROT_WRITE, MAP_ANON \| MAP_PRIVATE \| jit_flag}{::mmap(use_addr, size, AYS3_RESERVE_PROT, MAP_ANON | MAP_PRIVATE | jit_flag}g' "${vmn}"
-    echo "  vm_native: iOS no-MAP_JIT ($(grep -c 'AYS3_MAP_JIT' "${vmn}") refs) + reserve->PROT_NONE ($(grep -c 'AYS3_RESERVE_PROT,' "${vmn}") site) + mprotect/madvise non-fatal/no-EXEC (mprotect $(grep -c 'AYS3_MPROTECT_OR_MAP(reinterpret' "${vmn}"), madvise $(grep -c 'AYS3_MADVISE(' "${vmn}"))"
+    # Wall #23: utils::shm backs guest memory with shm_open (named POSIX shared
+    # memory). iOS sandboxes shm_open -> EPERM (confirmed: __GLOBAL__sub_I_vm.cpp
+    # constructs the 32 GiB hook shm at load and dies). Back it with an unlinked
+    # temp file in the app container ($TMPDIR, writable and set before main).
+    perl -0pi -e 's{(\t*const std::string name = "/rpcs3-mem2-".*?ensure\(::shm_unlink\(name\.c_str\(\)\) >= 0\);)}{#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n\t\t\t{ const char* _td = ::getenv("TMPDIR"); std::string _tp = std::string(_td ? _td : "/tmp") + "/rpcs3-mem2-XXXXXX"; m_file = ::mkstemp(\&_tp[0]); ensure(m_file >= 0); ::unlink(_tp.c_str()); } /* AYS3 Wall #23: iOS shm via container temp file (shm_open EPERM) */\n#else\n$1\n#endif}s' "${vmn}"
+    echo "  vm_native: iOS no-MAP_JIT ($(grep -c 'AYS3_MAP_JIT' "${vmn}") refs) + reserve->PROT_NONE ($(grep -c 'AYS3_RESERVE_PROT,' "${vmn}") site) + shm->tmpfile ($(grep -c 'AYS3 Wall #23' "${vmn}")) + mprotect/madvise non-fatal/no-EXEC"
   fi
 
   # Wall #21+#22: memory_reserve_4GiB places the vm base by scanning FIXED
