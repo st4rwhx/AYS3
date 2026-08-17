@@ -22,14 +22,45 @@ echo "date: $(date -u)"
 uname -a
 
 # --- 1. RPCS3 source (recursive submodules: LLVM, etc.) -----------------------
+# GitHub intermittently returns HTTP 500 mid-fetch, which used to leave a
+# submodule (e.g. 3rdparty/zstd's inner tree, or zlib) half-checked-out and blow
+# up configure with "zstd/build/cmake ... not an existing directory". So clone
+# the (small, reliable) main repo first, THEN pull submodules in a retry loop,
+# and hard-assert the tree is complete. Note: only `set -u` is active (no
+# pipefail), so we must check git's own exit status, not a tee pipeline's.
 if [ ! -d "${RPCS3_DIR}/.git" ]; then
-  echo "== cloning RPCS3 (${RPCS3_REF}) recursively — this is large =="
-  git clone --recursive --depth 1 --shallow-submodules \
-    --branch "${RPCS3_REF}" https://github.com/RPCS3/rpcs3 "${RPCS3_DIR}" \
-    2>&1 | tee "${LOG_DIR}/00-clone.log" || \
-  git clone --recursive --depth 1 --shallow-submodules \
-    https://github.com/RPCS3/rpcs3 "${RPCS3_DIR}" \
-    2>&1 | tee -a "${LOG_DIR}/00-clone.log"
+  echo "== cloning RPCS3 (${RPCS3_REF}) main repo =="
+  : > "${LOG_DIR}/00-clone.log"
+  for i in 1 2 3 4; do
+    rm -rf "${RPCS3_DIR}"
+    if git clone --depth 1 --branch "${RPCS3_REF}" \
+         https://github.com/RPCS3/rpcs3 "${RPCS3_DIR}" >>"${LOG_DIR}/00-clone.log" 2>&1; then
+      break
+    fi
+    echo "main clone attempt $i failed; retry in $((i*5))s" | tee -a "${LOG_DIR}/00-clone.log"
+    sleep $((i*5))
+  done
+fi
+
+# Fetch submodules with retries — a transient failure on one leaves the tree
+# unconfigurable; retrying almost always clears a GitHub 5xx.
+if [ -d "${RPCS3_DIR}/.git" ]; then
+  echo "== fetching RPCS3 submodules (recursive, retried) =="
+  for i in 1 2 3 4 5; do
+    if git -C "${RPCS3_DIR}" submodule update --init --recursive \
+         --depth 1 --jobs 4 >>"${LOG_DIR}/00-clone.log" 2>&1; then
+      echo "submodules OK on attempt $i" | tee -a "${LOG_DIR}/00-clone.log"
+      break
+    fi
+    echo "submodule attempt $i failed (transient GitHub fetch?); retry in $((i*5))s" | tee -a "${LOG_DIR}/00-clone.log"
+    sleep $((i*5))
+  done
+  # Hard-assert the submodule that has bitten us actually materialized, so an
+  # infra flake fails LOUD and re-runnable instead of as a cryptic CMake error.
+  if [ ! -d "${RPCS3_DIR}/3rdparty/zstd/zstd/build/cmake" ]; then
+    echo "::error::RPCS3 submodules still incomplete after retries (zstd/build/cmake missing) — GitHub fetch flake, not a code issue. Re-run this job." | tee -a "${LOG_DIR}/00-clone.log"
+    exit 1
+  fi
 fi
 RPCS3_SHA="$(git -C "${RPCS3_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "RPCS3 pinned at: ${RPCS3_SHA}" | tee "${LOG_DIR}/01-rpcs3-sha.txt"
