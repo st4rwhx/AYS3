@@ -57,12 +57,24 @@ struct GameScreenView: View {
 
     private var game: HeroGame { games[selected] }
 
+    // The layout is authored at a fixed reference size and scaled to fit the
+    // device's safe area — so it looks identical (and never clips) on any
+    // iPhone, exactly like the 10-foot mockup.
+    private let referenceSize = CGSize(width: 900, height: 420)
+
     var body: some View {
-        ZStack {
-            PS3.background
-            artWash
-            leftVignette
-            content
+        GeometryReader { geo in
+            let scale = min(geo.size.width / referenceSize.width,
+                            geo.size.height / referenceSize.height)
+            ZStack {
+                PS3.background
+                artWash
+                leftVignette
+                content
+                    .frame(width: referenceSize.width, height: referenceSize.height)
+                    .scaleEffect(scale)
+                    .frame(width: geo.size.width, height: geo.size.height)
+            }
         }
         .preferredColorScheme(.dark)
     }
