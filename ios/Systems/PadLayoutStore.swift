@@ -163,10 +163,14 @@ final class PadLayoutStore: @unchecked Sendable {
     func resetLandscape() { landscape = PadLayout.defaultLandscape }
     func reset(isLandscape: Bool) { isLandscape ? resetLandscape() : resetPortrait() }
     func resetPerButtonActionButtons(isLandscape l: Bool) {
-        for id in PadLayout.actionButtonIDs { (l ? { perButtonLandscape.removeValue(forKey: id) } : { perButtonPortrait.removeValue(forKey: id) })() }
+        for id in PadLayout.actionButtonIDs {
+            if l { perButtonLandscape.removeValue(forKey: id) } else { perButtonPortrait.removeValue(forKey: id) }
+        }
     }
     func resetPerButtonDPad(isLandscape l: Bool) {
-        for id in ["up", "down", "left", "right"] { (l ? { perButtonLandscape.removeValue(forKey: id) } : { perButtonPortrait.removeValue(forKey: id) })() }
+        for id in ["up", "down", "left", "right"] {
+            if l { perButtonLandscape.removeValue(forKey: id) } else { perButtonPortrait.removeValue(forKey: id) }
+        }
     }
     func resetAll() {
         portrait = PadLayout.defaultPortrait; landscape = PadLayout.defaultLandscape

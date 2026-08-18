@@ -65,7 +65,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     /// Per-language string tables. Seeded empty — English needs none (keys are
     /// English), other languages are filled over time. A missing entry returns
     /// the English key, so the UI never shows a raw identifier.
-    private static let translations: [AppLanguage: [String: String]] = [
-        // .french: ["Games": "Jeux", …],  ← filled progressively
-    ]
+    // Filled progressively, e.g. [.french: ["Games": "Jeux", …]].
+    private static let translations: [AppLanguage: [String: String]] = [:]
 }
