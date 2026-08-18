@@ -80,8 +80,11 @@ final class EmuCorePadLayoutINIStore: PadLayoutINIStore {
 // MARK: - Metrics & geometry
 
 enum PadLayoutMetrics {
+    static let minimumTouchLength: CGFloat = 55
     static let dpadPortraitSize: CGFloat = 100
     static let dpadLandscapeSize: CGFloat = 110
+    /// Base render size of a face (action) button — square, both orientations.
+    static let actionButtonSize: CGFloat = 42
 
     static func dpadButtonWidth(isLandscape: Bool) -> CGFloat {
         (isLandscape ? dpadLandscapeSize : dpadPortraitSize) * 0.42
@@ -89,17 +92,21 @@ enum PadLayoutMetrics {
     static func dpadOffset(isLandscape: Bool) -> CGFloat {
         (isLandscape ? dpadLandscapeSize : dpadPortraitSize) * 0.29
     }
+    /// Spread of each face button from the action-group centre.
+    static let actionOffset: CGFloat = actionButtonSize * 1.1
 
     /// Visual length of a control given its base length and visible scale.
     static func visibleLength(baseLength: CGFloat, visibleScale: CGFloat) -> CGFloat {
         baseLength * clampedScale(visibleScale)
     }
-    /// Touch length of a control given its base length and hit scale.
+    /// Touch length of a control given its base length and hit scale. A minimum
+    /// base length keeps small controls comfortably touchable.
     static func touchLength(baseLength: CGFloat, hitScale: CGFloat) -> CGFloat {
-        baseLength * clampedScale(hitScale)
+        max(baseLength, minimumTouchLength) * clampedScale(hitScale)
     }
     static func clampedScale(_ scale: CGFloat) -> CGFloat {
-        min(max(scale, 0.5), 2.5)
+        guard scale.isFinite else { return 1.0 }
+        return min(max(scale, 0.5), 7.0)
     }
 }
 
@@ -108,7 +115,7 @@ enum PadLayoutMetrics {
 enum VirtualPadButtonOffset {
     static func offset(for id: String, isLandscape: Bool) -> CGSize {
         let dpadOff = PadLayoutMetrics.dpadOffset(isLandscape: isLandscape)
-        let actionOff = dpadOff   // action cluster mirrors the d-pad spread
+        let actionOff = PadLayoutMetrics.actionOffset
         switch id {
         case "up":       return CGSize(width: 0, height: -dpadOff)
         case "down":     return CGSize(width: 0, height: dpadOff)
