@@ -69,7 +69,7 @@ jobs:
       - name: Package .ipa
         if: always()
         run: |
-          APP="$(find build/DerivedData -type d -name 'iPS3.app' | head -1)"
+          APP="$(find build -type d -name 'iPS3.app' | head -1)"
           if [ -z "$APP" ]; then echo "::error::iPS3.app not produced — build failed."; exit 1; fi
           echo "app: $APP  ($(du -sh "$APP" | cut -f1))"
           rm -rf Payload && mkdir Payload
