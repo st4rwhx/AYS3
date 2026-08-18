@@ -9,6 +9,7 @@ import SwiftUI
 struct GamePlayView: View {
     let title: String
     @Binding var isPresented: Bool
+    @State private var editingLayout = false
 
     var body: some View {
         ZStack {
@@ -39,10 +40,25 @@ struct GamePlayView: View {
                     }
                     .buttonStyle(.plain)
                     Spacer()
+                    Button { editingLayout = true } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "slider.horizontal.3")
+                            Text("Layout").font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(PS3.text)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(.black.opacity(0.4), in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
                 }
                 Spacer()
             }
             .padding(16)
+
+            if editingLayout {
+                PadLayoutEditorView(isPresented: $editingLayout)
+            }
         }
         .statusBarHidden(true)
         .preferredColorScheme(.dark)
