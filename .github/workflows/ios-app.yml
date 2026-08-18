@@ -1,0 +1,97 @@
+name: iPS3 app (SwiftUI)
+
+# Milestone 1: build the standalone SwiftUI app (ported systems + first screen),
+# no emulator core yet. Proves the Swift toolchain + systems compile and produces
+# a sideloadable .ipa. Uses the CMake Xcode generator + xcodebuild.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XC="$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - name: Install CMake
+        run: |
+          brew update || true
+          for i in 1 2 3; do brew install cmake && break; echo "retry $i"; sleep $((i*5)); done
+          command -v cmake >/dev/null || { echo "::error::CMake missing"; exit 1; }
+          cmake --version
+
+      - name: Configure (CMake Xcode generator)
+        run: |
+          cmake -B build -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DIPS3_BUILD_NUM=${{ github.run_number }} \
+            ios 2>&1 | tee cmake.log
+          echo '### CMake' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "error|warning|configuring done|generating done" cmake.log | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build (xcodebuild, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project build/iPS3.xcodeproj \
+            -target iPS3 \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log
+          echo '### Build errors' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "error:|error |BUILD FAILED|BUILD SUCCEEDED" build.log | tail -60 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package .ipa
+        if: always()
+        run: |
+          APP="$(find build/DerivedData -type d -name 'iPS3.app' | head -1)"
+          if [ -z "$APP" ]; then echo "::error::iPS3.app not produced — build failed."; exit 1; fi
+          echo "app: $APP  ($(du -sh "$APP" | cut -f1))"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          # Plain zip of Payload/ = .ipa (SideStore re-signs on install).
+          ditto -c -k --sequesterRsrc --keepParent Payload iPS3.ipa
+          echo "ipa: $(du -sh iPS3.ipa | cut -f1)"
+
+      - name: Upload .ipa
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPS3-app-ipa
+          path: iPS3.ipa
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPS3-app-logs
+          path: |
+            cmake.log
+            build.log
+          if-no-files-found: warn
