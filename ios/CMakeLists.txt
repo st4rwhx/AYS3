@@ -13,6 +13,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(iPS3 LANGUAGES Swift)
 
+# Generate a per-target Xcode scheme so `xcodebuild -scheme iPS3` works
+# (required when -derivedDataPath is passed).
+set(CMAKE_XCODE_GENERATE_SCHEME ON)
+
 set(IPS3_VERSION "1.0.${IPS3_BUILD_NUM}" CACHE STRING "iPS3 marketing version")
 set(IPS3_BUILD "${IPS3_BUILD_NUM}" CACHE STRING "iPS3 build number")
 if(NOT IPS3_BUILD_NUM)

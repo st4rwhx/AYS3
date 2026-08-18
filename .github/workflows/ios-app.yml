@@ -55,7 +55,7 @@ jobs:
           set -o pipefail
           xcodebuild \
             -project build/iPS3.xcodeproj \
-            -target iPS3 \
+            -scheme iPS3 \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
