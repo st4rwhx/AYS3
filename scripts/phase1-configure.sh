@@ -228,6 +228,21 @@ SHIM
     echo "  JITASM Wall #24: JIT arena wired (arena=$(grep -c 'g_ays3_jit_x' "${ja}") refs, write-redirect=$(grep -c 'ays3_jit_w(p)' "${ja}"), commit-skip=$(grep -c 'Off == 0 && g_ays3_jit_x' "${ja}"))"
   fi
 
+  # Wall #25 (no-recompiler default): the LLVM/asmjit recompilers need executable
+  # memory, which iOS only grants under a debugger. The pure interpreters
+  # (ppu/spu "Interpreter (static)") emit NO native code, so they run guest code
+  # with zero executable pages — a build that boots for everyone, no debugger
+  # required (slower, but correct). Flip the two decoder DEFAULTS to interpreter
+  # on iOS so a fresh install runs without any JIT session; the recompiler path
+  # (Wall #24) stays available for when a debugger is attached.
+  local sc="${RPCS3_DIR}/rpcs3/Emu/system_config.h"
+  if [ -f "${sc}" ] && ! grep -q 'AYS3_INTERP' "${sc}"; then
+    perl -0pi -e 's/\A/\/\/ AYS3_INTERP\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) \&\& TARGET_OS_IPHONE\n#define AYS3_PPU_DEFAULT ppu_decoder_type::_static\n#define AYS3_SPU_DEFAULT spu_decoder_type::_static\n#else\n#define AYS3_PPU_DEFAULT ppu_decoder_type::llvm\n#define AYS3_SPU_DEFAULT spu_decoder_type::llvm\n#endif\n/' "${sc}"
+    perl -pi -e 's{("PPU Decoder", )ppu_decoder_type::llvm}{$1AYS3_PPU_DEFAULT}g' "${sc}"
+    perl -pi -e 's{("SPU Decoder", )spu_decoder_type::llvm}{$1AYS3_SPU_DEFAULT}g' "${sc}"
+    echo "  system_config Wall #25: iOS decoder defaults -> interpreter (ppu=$(grep -c 'AYS3_PPU_DEFAULT' "${sc}"), spu=$(grep -c 'AYS3_SPU_DEFAULT' "${sc}"))"
+  fi
+
   # Wall #18: RPCS3's vm reserves ~56 GiB of virtual address at STATIC INIT
   # (g_base_addr 8 GiB @ 0x2'0000'0000, g_exec 12 GiB, g_hook 32 GiB, g_stat
   # 4 GiB) as PROT_READ|PROT_WRITE|MAP_NORESERVE — that succeeds lazily on iOS.
