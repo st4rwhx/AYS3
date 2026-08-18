@@ -54,6 +54,7 @@ struct GameScreenView: View {
 
     @State private var selected = 1
     @State private var tab: MediaTab = .box
+    @State private var playing = false
 
     private var game: HeroGame { games[selected] }
 
@@ -77,6 +78,9 @@ struct GameScreenView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .fullScreenCover(isPresented: $playing) {
+            GamePlayView(title: game.title, isPresented: $playing)
+        }
     }
 
     // MARK: Background
@@ -325,7 +329,7 @@ struct GameScreenView: View {
     }
 
     private var playButton: some View {
-        Button { } label: {
+        Button { playing = true } label: {
             HStack(spacing: 8) {
                 Text("✕").font(.system(size: 15))
                     .frame(width: 26, height: 26)
