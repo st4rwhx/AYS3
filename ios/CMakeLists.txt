@@ -53,3 +53,8 @@ set_target_properties(iPS3 PROPERTIES
 	XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS "iphoneos iphonesimulator"
 	XCODE_ATTRIBUTE_ENABLE_ON_DEMAND_RESOURCES "NO"
 )
+
+# Bundle controller art (the "iPS3 signature" skin) into the app Resources.
+file(GLOB IPS3_RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Resources/*.png")
+target_sources(iPS3 PRIVATE ${IPS3_RESOURCES})
+set_source_files_properties(${IPS3_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)

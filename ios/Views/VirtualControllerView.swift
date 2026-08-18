@@ -4,28 +4,60 @@
 // normalized position for the current orientation, its VISUAL size driven by the
 // group's scale and its TOUCH target by the (independent) hit scale — the dual-
 // scale idea from the prior project (touch area can be larger than the art).
-// Input is forwarded to the active EmuCore (a no-op until a core is bound, so the
-// pad is fully testable now).
+//
+// The art is the "iPS3 signature" skin (the prior project's signature pad):
+// thin lines of blue light with a soft glow and transparent interiors. Touching
+// a control ignites it (brightness + glow). Input is forwarded to the active
+// EmuCore (a no-op until a core is bound, so the pad is fully testable now).
 
 import SwiftUI
+
+// MARK: - Skin asset loader (bundled PNGs)
+
+enum SigSkin {
+    private static var cache: [String: UIImage] = [:]
+    static func image(_ name: String) -> UIImage? {
+        if let hit = cache[name] { return hit }
+        var img = UIImage(named: name)
+        if img == nil, let url = Bundle.main.url(forResource: name, withExtension: "png") {
+            img = UIImage(contentsOfFile: url.path)
+        }
+        if let img { cache[name] = img }
+        return img
+    }
+}
+
+private func skinImage(_ name: String, ignited: Bool) -> some View {
+    Group {
+        if let ui = SigSkin.image(name) {
+            Image(uiImage: ui).resizable().scaledToFit()
+        } else {
+            Color.clear
+        }
+    }
+    .brightness(ignited ? 0.35 : 0)
+    .shadow(color: Color(hex: 0x5AA0FF).opacity(ignited ? 0.95 : 0.35),
+            radius: ignited ? 14 : 4)
+}
+
+// MARK: - Controller
 
 struct VirtualControllerView: View {
     var layout: PadLayoutStore = .shared
     var core: EmuCore? = AppState.shared.core
 
-    // Base sizes at scale 1.0 (points).
-    private let faceBase: CGFloat = 58
-    private let dirBase: CGFloat = 52
-    private let shoulderBase = CGSize(width: 88, height: 40)
-    private let sysBase = CGSize(width: 62, height: 28)
-    private let stickBase: CGFloat = 120
+    // Base display sizes at scale 1.0 (points).
+    private let faceBase: CGFloat = 66
+    private let dirBase: CGFloat = 58
+    private let shoulderBase = CGSize(width: 100, height: 48)
+    private let sysBase = CGSize(width: 72, height: 34)
+    private let stickBase: CGFloat = 128
 
     var body: some View {
         GeometryReader { geo in
             let landscape = geo.size.width >= geo.size.height
             let w = geo.size.width, h = geo.size.height
             ZStack {
-                dpadCross(landscape, w, h)
                 shoulders(landscape, w, h)
                 systemButtons(landscape, w, h)
                 directions(landscape, w, h)
@@ -38,38 +70,38 @@ struct VirtualControllerView: View {
     @ViewBuilder
     private func shoulders(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
         Group {
-            shoulder("l1", "L1", .l1, l, w, h)
-            shoulder("l2", "L2", .l2, l, w, h)
-            shoulder("r1", "R1", .r1, l, w, h)
-            shoulder("r2", "R2", .r2, l, w, h)
+            imageControl("l1", "sig_l1", .l1, shoulderBase, .capsule, group: true, l, w, h)
+            imageControl("l2", "sig_l2", .l2, shoulderBase, .capsule, group: true, l, w, h)
+            imageControl("r1", "sig_r1", .r1, shoulderBase, .capsule, group: true, l, w, h)
+            imageControl("r2", "sig_r2", .r2, shoulderBase, .capsule, group: true, l, w, h)
         }
     }
 
     @ViewBuilder
     private func systemButtons(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
         Group {
-            systemPill("select", "SELECT", .select, l, w, h)
-            systemPill("start", "START", .start, l, w, h)
+            imageControl("select", "sig_select", .select, sysBase, .capsule, group: true, l, w, h)
+            imageControl("start", "sig_start", .start, sysBase, .capsule, group: true, l, w, h)
         }
     }
 
     @ViewBuilder
     private func directions(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
         Group {
-            dirButton("up", "chevron.up", .up, l, w, h)
-            dirButton("down", "chevron.down", .down, l, w, h)
-            dirButton("left", "chevron.left", .left, l, w, h)
-            dirButton("right", "chevron.right", .right, l, w, h)
+            imageControl("up", "sig_up", .up, CGSize(width: dirBase, height: dirBase), .rect, group: false, l, w, h)
+            imageControl("down", "sig_down", .down, CGSize(width: dirBase, height: dirBase), .rect, group: false, l, w, h)
+            imageControl("left", "sig_left", .left, CGSize(width: dirBase, height: dirBase), .rect, group: false, l, w, h)
+            imageControl("right", "sig_right", .right, CGSize(width: dirBase, height: dirBase), .rect, group: false, l, w, h)
         }
     }
 
     @ViewBuilder
     private func faces(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
         Group {
-            faceButton("triangle", "△", .triangle, l, w, h)
-            faceButton("circle", "◯", .circle, l, w, h)
-            faceButton("cross", "✕", .cross, l, w, h)
-            faceButton("square", "□", .square, l, w, h)
+            imageControl("triangle", "sig_triangle", .triangle, CGSize(width: faceBase, height: faceBase), .circle, group: false, l, w, h)
+            imageControl("circle", "sig_circle", .circle, CGSize(width: faceBase, height: faceBase), .circle, group: false, l, w, h)
+            imageControl("cross", "sig_cross", .cross, CGSize(width: faceBase, height: faceBase), .circle, group: false, l, w, h)
+            imageControl("square", "sig_square", .square, CGSize(width: faceBase, height: faceBase), .circle, group: false, l, w, h)
         }
     }
 
@@ -83,101 +115,33 @@ struct VirtualControllerView: View {
 
     // MARK: Geometry
 
-    private func groupCenter(_ id: String, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> (CGPoint, CGFloat, CGFloat) {
-        let p = layout.position(for: id, landscape: l)
-        return (CGPoint(x: p.x * w, y: p.y * h), p.scale, p.hitScale)
-    }
-    private func buttonCenter(_ id: String, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> (CGPoint, CGFloat, CGFloat) {
-        let p = layout.perButtonPosition(for: id, landscape: l, areaW: w, areaH: h)
+    private func center(_ id: String, group: Bool, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> (CGPoint, CGFloat, CGFloat) {
+        let p = group ? layout.position(for: id, landscape: l)
+                      : layout.perButtonPosition(for: id, landscape: l, areaW: w, areaH: h)
         return (CGPoint(x: p.x * w, y: p.y * h), p.scale, p.hitScale)
     }
 
-    // MARK: Controls
+    // MARK: Builders
 
     @ViewBuilder
-    private func shoulder(_ id: String, _ label: String, _ btn: PadButton, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
+    private func imageControl(_ id: String, _ asset: String, _ btn: PadButton,
+                              _ base: CGSize, _ shape: TouchControl<AnyView>.HitShape,
+                              group: Bool, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
         if layout.isControlVisible(id) {
-            let (c, s, hit) = groupCenter(id, l, w, h)
+            let (c, s, hit) = center(id, group: group, l, w, h)
             TouchControl(button: btn, core: core,
-                         visual: CGSize(width: shoulderBase.width * s, height: shoulderBase.height * s),
-                         hitArea: CGSize(width: shoulderBase.width * hit, height: shoulderBase.height * hit),
-                         shape: .capsule) { down in
-                ZStack {
-                    Capsule().fill(down ? PS3.primary.opacity(0.9) : Color.white.opacity(0.14))
-                    Capsule().strokeBorder(.white.opacity(0.25))
-                    Text(label).font(.system(size: 14, weight: .bold)).foregroundStyle(down ? .white : PS3.text)
-                }
+                         visual: CGSize(width: base.width * s, height: base.height * s),
+                         hitArea: CGSize(width: base.width * hit, height: base.height * hit),
+                         shape: shape) { down in
+                AnyView(skinImage(asset, ignited: down))
             }.position(c)
-        }
-    }
-
-    @ViewBuilder
-    private func systemPill(_ id: String, _ label: String, _ btn: PadButton, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
-        if layout.isControlVisible(id) {
-            let (c, s, hit) = groupCenter(id, l, w, h)
-            TouchControl(button: btn, core: core,
-                         visual: CGSize(width: sysBase.width * s, height: sysBase.height * s),
-                         hitArea: CGSize(width: sysBase.width * hit, height: sysBase.height * hit),
-                         shape: .capsule) { down in
-                ZStack {
-                    Capsule().fill(down ? PS3.primary.opacity(0.8) : Color.white.opacity(0.12))
-                    Text(label).font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(down ? .white : PS3.muted)
-                }
-            }.position(c)
-        }
-    }
-
-    @ViewBuilder
-    private func faceButton(_ id: String, _ glyph: String, _ btn: PadButton, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
-        if layout.isControlVisible(id) {
-            let (c, s, hit) = buttonCenter(id, l, w, h)
-            TouchControl(button: btn, core: core,
-                         visual: CGSize(width: faceBase * s, height: faceBase * s),
-                         hitArea: CGSize(width: faceBase * hit, height: faceBase * hit),
-                         shape: .circle) { down in
-                ZStack {
-                    Circle().fill(down ? PS3.primary.opacity(0.85) : Color.white.opacity(0.10))
-                    Circle().strokeBorder(.white.opacity(0.28))
-                    Text(glyph).font(.system(size: 22 * s, weight: .regular)).foregroundStyle(down ? .white : PS3.text)
-                }
-            }.position(c)
-        }
-    }
-
-    @ViewBuilder
-    private func dirButton(_ id: String, _ symbol: String, _ btn: PadButton, _ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
-        if layout.isControlVisible(id) {
-            let (c, s, hit) = buttonCenter(id, l, w, h)
-            TouchControl(button: btn, core: core,
-                         visual: CGSize(width: dirBase * s, height: dirBase * s),
-                         hitArea: CGSize(width: dirBase * hit, height: dirBase * hit),
-                         shape: .rect) { down in
-                Image(systemName: symbol).font(.system(size: 20 * s, weight: .bold))
-                    .foregroundStyle(down ? PS3.cyan : PS3.text)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }.position(c)
-        }
-    }
-
-    @ViewBuilder
-    private func dpadCross(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
-        if layout.isControlVisible("dpad") {
-            let (c, s, _) = groupCenter("dpad", l, w, h)
-            ZStack {
-                Capsule().fill(.white.opacity(0.07)).frame(width: 34 * s, height: 104 * s)
-                Capsule().fill(.white.opacity(0.07)).frame(width: 104 * s, height: 34 * s)
-                Capsule().strokeBorder(.white.opacity(0.14)).frame(width: 34 * s, height: 104 * s)
-                Capsule().strokeBorder(.white.opacity(0.14)).frame(width: 104 * s, height: 34 * s)
-            }
-            .position(c)
-            .allowsHitTesting(false)
         }
     }
 
     @ViewBuilder
     private func stick(_ id: String, _ l: Bool, _ w: CGFloat, _ h: CGFloat, onChange: @escaping (Float, Float) -> Void) -> some View {
         if layout.isControlVisible(id) {
-            let (c, s, hit) = groupCenter(id, l, w, h)
+            let (c, s, hit) = center(id, group: true, l, w, h)
             AnalogStick(base: stickBase * s, hit: stickBase * hit, onChange: onChange).position(c)
         }
     }
@@ -185,7 +149,7 @@ struct VirtualControllerView: View {
 
 // MARK: - Unified touch control (visual size vs hit size)
 
-private struct TouchControl<V: View>: View {
+struct TouchControl<V: View>: View {
     enum HitShape { case circle, capsule, rect }
     let button: PadButton
     var core: EmuCore?
@@ -216,34 +180,30 @@ private struct TouchControl<V: View>: View {
     }
 }
 
-// MARK: - Analog stick (draggable thumb)
+// MARK: - Analog stick (image base + draggable thumb)
 
 private struct AnalogStick: View {
     let base: CGFloat
     let hit: CGFloat
     let onChange: (Float, Float) -> Void
     @State private var thumb: CGSize = .zero
+    @State private var active = false
 
-    private var radius: CGFloat { base * 0.34 }
+    private var radius: CGFloat { base * 0.32 }
 
     var body: some View {
         ZStack {
-            Circle().fill(Color.white.opacity(0.06))
-                .overlay(Circle().strokeBorder(.white.opacity(0.18)))
-                .frame(width: base, height: base)
-            Circle().fill(
-                LinearGradient(colors: [Color.white.opacity(0.85), PS3.primary.opacity(0.6)],
-                               startPoint: .top, endPoint: .bottom))
-                .overlay(Circle().strokeBorder(.white.opacity(0.5)))
-                .frame(width: base * 0.5, height: base * 0.5)
+            skinImage("sig_analog_base", ignited: active).frame(width: base, height: base)
+            skinImage("sig_analog_stick", ignited: active)
+                .frame(width: base * 0.58, height: base * 0.58)
                 .offset(thumb)
-                .shadow(color: PS3.primary.opacity(0.4), radius: 6)
         }
         .frame(width: hit, height: hit)
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in
+                    active = true
                     let dx = v.location.x - hit / 2
                     let dy = v.location.y - hit / 2
                     let dist = max(1, (dx * dx + dy * dy).squareRoot())
@@ -253,7 +213,7 @@ private struct AnalogStick: View {
                     thumb = CGSize(width: nx, height: ny)
                     onChange(Float(nx / radius), Float(ny / radius))
                 }
-                .onEnded { _ in thumb = .zero; onChange(0, 0) }
+                .onEnded { _ in active = false; thumb = .zero; onChange(0, 0) }
         )
     }
 }

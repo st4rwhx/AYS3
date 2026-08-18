@@ -13,6 +13,7 @@ import Observation
 // MARK: - Built-in skins
 
 enum VirtualPadSkin: Int, CaseIterable, Identifiable {
+    case iPS3Signature = 20   // default: thin blue-light pad (the signature skin)
     case whiteColored = 0
     case refreshLegacy = 3
     case fullWhite = 4
@@ -34,6 +35,7 @@ enum VirtualPadSkin: Int, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .iPS3Signature: return "iPS3 Signature"
         case .whiteColored: return "White Colored"
         case .crispVector: return "Crisp Vector"
         case .custom: return "Custom Imported"
@@ -53,7 +55,7 @@ enum VirtualPadSkin: Int, CaseIterable, Identifiable {
     /// Bundled asset directory for skins whose art ships in the app.
     var bundledDirectoryName: String? {
         switch self {
-        case .whiteColored, .crispVector, .custom: return nil
+        case .iPS3Signature, .whiteColored, .crispVector, .custom: return nil
         case .refreshLegacy: return "refresh_legacy"
         case .fullWhite: return "full_white"
         case .whiteDS: return "white_ds"
@@ -159,9 +161,9 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         }
     }
     static var defaultDescriptor: VPadSkinDescriptor {
-        VPadSkinDescriptor(id: VirtualPadSkin.whiteColored.descriptorID,
-                           displayName: VirtualPadSkin.whiteColored.label, source: .builtIn,
-                           builtInSkinRawValue: VirtualPadSkin.whiteColored.rawValue)
+        VPadSkinDescriptor(id: VirtualPadSkin.iPS3Signature.descriptorID,
+                           displayName: VirtualPadSkin.iPS3Signature.label, source: .builtIn,
+                           builtInSkinRawValue: VirtualPadSkin.iPS3Signature.rawValue)
     }
 
     func descriptor(id: String?) -> VPadSkinDescriptor? {
