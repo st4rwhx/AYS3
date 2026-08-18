@@ -35,7 +35,7 @@ enum PadButton: Int, CaseIterable, Sendable {
     case start, select
     case l3, r3
 
-    /// Stable identifier used by the on-screen layout (matches AYS2 pad IDs).
+    /// Stable identifier used by the on-screen layout (matches the prior project pad IDs).
     var layoutID: String {
         switch self {
         case .up: return "up";          case .down: return "down"

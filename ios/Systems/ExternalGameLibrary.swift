@@ -1,6 +1,6 @@
 // ExternalGameLibrary.swift — security-scoped external game folders/files.
 //
-// Ported from AYS2. Lets the user point the library at folders or single game
+// Ported from the prior project. Lets the user point the library at folders or single game
 // files outside the app container (Files app locations), persisted as
 // security-scoped bookmarks. Self-contained — no core dependency. Supported
 // extensions cover both PS2 and PS3 disc/package formats; PS3 games are often

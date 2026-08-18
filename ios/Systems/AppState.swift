@@ -1,6 +1,6 @@
 // AppState.swift — top-level screen state + game lifecycle.
 //
-// Ported from AYS2. Owns which screen is shown (library vs playing), the running
+// Ported from the prior project. Owns which screen is shown (library vs playing), the running
 // game, and system-chrome flags, and drives boot / return / reset through the
 // active EmuCore. The core's bridge posts the shutdown / auto-boot notifications
 // this observes. JIT enablement (for the recompiler path) is an injectable hook

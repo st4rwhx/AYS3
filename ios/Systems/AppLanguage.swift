@@ -1,6 +1,6 @@
 // AppLanguage.swift — UI localization.
 //
-// Ported from AYS2. The mechanism is faithful; the string tables are seeded
+// Ported from the prior project. The mechanism is faithful; the string tables are seeded
 // empty and filled progressively. English keys ARE the source text, so English
 // is complete by construction and any missing translation falls back to English
 // rather than showing a raw key. RTL is handled for Arabic.

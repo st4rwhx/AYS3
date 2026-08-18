@@ -1,8 +1,8 @@
 // PadLayoutStore.swift — the live, editable controller layout.
 //
-// Ported faithfully from AYS2. Holds the current layout (group + per-button
+// Ported faithfully from the prior project. Holds the current layout (group + per-button
 // positions, per-orientation, per-axis visual/hit scale, visibility), edits it,
-// and round-trips it through config. AYS2 persisted through the PS2 bridge; here
+// and round-trips it through config. The prior project persisted through the PS2 bridge; here
 // it persists through whichever EmuCore is active — bind it with `rebind(to:)`
 // once a core is loaded. Until then an in-memory store keeps edits working.
 

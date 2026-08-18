@@ -1,6 +1,6 @@
 // PadLayout.swift — the on-screen controller layout system.
 //
-// Ported faithfully from AYS2's proven pad system. Console-agnostic: the same
+// Ported faithfully from the prior project's proven pad system. Console-agnostic: the same
 // layout drives PS2 (DualShock 2) and PS3 (DualShock 3) because the button set
 // is identical. Two ideas carry the whole system:
 //   • normalized positions (0…1) per group, per orientation, so a layout is
@@ -27,7 +27,7 @@ struct PadGroupPosition: Codable, Equatable {
     var hitScaleY: CGFloat
 
     /// Uniform visual scale. Reading returns the X axis; writing sets both axes
-    /// (a plain scale edit), matching AYS2's editor behaviour.
+    /// (a plain scale edit), matching the prior project's editor behaviour.
     var scale: CGFloat {
         get { scaleX }
         set { scaleX = newValue; scaleY = newValue }
@@ -104,7 +104,7 @@ enum PadLayoutMetrics {
 }
 
 /// Offsets of each per-button relative to its group centre (in points, scaled
-/// by the group's scale at layout time). Mirrors AYS2's cardinal arrangement.
+/// by the group's scale at layout time). Mirrors the prior project's cardinal arrangement.
 enum VirtualPadButtonOffset {
     static func offset(for id: String, isLandscape: Bool) -> CGSize {
         let dpadOff = PadLayoutMetrics.dpadOffset(isLandscape: isLandscape)
@@ -142,7 +142,7 @@ enum PadLayout {
         return perButtonID
     }
 
-    /// Default portrait layout (normalized). Exact values from AYS2.
+    /// Default portrait layout (normalized). Exact values from the prior project.
     static let defaultPortrait: [String: PadGroupPosition] = [
         "l2":     PadGroupPosition(x: 0.16, y: 0.06, scale: 1.0),
         "l1":     PadGroupPosition(x: 0.16, y: 0.14, scale: 1.0),
@@ -156,7 +156,7 @@ enum PadLayout {
         "rstick": PadGroupPosition(x: 0.72, y: 0.78, scale: 1.0),
     ]
 
-    /// Default landscape layout (normalized). Exact values from AYS2.
+    /// Default landscape layout (normalized). Exact values from the prior project.
     static let defaultLandscape: [String: PadGroupPosition] = [
         "dpad":   PadGroupPosition(x: 0.14, y: 0.72, scale: 1.0),
         "action": PadGroupPosition(x: 0.84, y: 0.72, scale: 1.0),

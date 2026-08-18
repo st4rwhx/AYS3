@@ -1,6 +1,6 @@
 // PadLayoutPresetStore.swift — named layout presets + per-game assignments.
 //
-// Ported from AYS2. JSON-file backed (app-agnostic), no core, no UIKit. Owns:
+// Ported from the prior project. JSON-file backed (app-agnostic), no core, no UIKit. Owns:
 //   • the user's saved layout presets,
 //   • the global default preset,
 //   • per-game (serial|crc) assignments of a layout preset and/or a skin.

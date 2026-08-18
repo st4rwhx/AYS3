@@ -1,6 +1,6 @@
 // VPadSkin.swift — on-screen controller skins (built-in + imported library).
 //
-// Ported from AYS2, PS-neutral branding. A skin is either a built-in art set or
+// Ported from the prior project, PS-neutral branding. A skin is either a built-in art set or
 // a user-imported one (a .zip of button images / a full portrait+landscape
 // skin). The library tracks descriptors, the current selection, and per-skin
 // asset folders; presets link to a skin by id. The .zip extraction itself is a

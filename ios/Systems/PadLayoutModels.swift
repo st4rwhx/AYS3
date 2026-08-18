@@ -1,6 +1,6 @@
 // PadLayoutModels.swift — snapshots, presets, per-game identity, import/export.
 //
-// Ported from AYS2. Pure value types + JSON codec: no core, no UIKit. The live
+// Ported from the prior project. Pure value types + JSON codec: no core, no UIKit. The live
 // editable store and the skin library (which reference these) are separate
 // files. Static defaults/geometry come from `PadLayout` (PadLayout.swift).
 
