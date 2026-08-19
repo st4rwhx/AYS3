@@ -73,6 +73,17 @@ jobs:
           chmod +x scripts/phase1-configure.sh
           ./scripts/phase1-configure.sh
 
+      # Step 2b: build the merged SwiftUI app that links the just-built core.
+      # Best-effort like the spike itself — expected to hit walls we iterate on.
+      - name: Build merged SwiftUI app (step 2b)
+        if: always()
+        continue-on-error: true
+        env:
+          IPS3_BUILD_NUM: ${{ github.run_number }}
+        run: |
+          chmod +x scripts/merge-app.sh
+          ./scripts/merge-app.sh || echo "merge-app hit a wall (see 60-merge-app.log)"
+
       - name: Summarize walls
         if: always()
         run: |
@@ -116,6 +127,15 @@ jobs:
             core-export.tar.gz
             core-link.txt
             core-libs-list.txt
+          if-no-files-found: warn
+
+      # Step 2b output: the merged SwiftUI-app IPA (UI + core in one binary).
+      - name: Upload merged app IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPS3-merged-ipa
+          path: iPS3.ipa
           if-no-files-found: warn
 
       - name: Publish versioned release (new version every successful build)
