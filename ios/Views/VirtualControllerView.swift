@@ -59,6 +59,10 @@ struct VirtualControllerView: View {
     // Base render size of the analog stick at scale 1.0 (points).
     private let stickBase: CGFloat = 68
 
+    /// Named coordinate space for the controller area, so touch resolution is
+    /// independent of how any child view is positioned.
+    static let padSpace = "vpadArea"
+
     /// Base render size at scale 1.0 for each control, per orientation — the
     /// exact frame sizes the prior project uses (d-pad and face buttons derive
     /// from the shared metrics; shoulders and system buttons are fixed rects).
@@ -89,6 +93,7 @@ struct VirtualControllerView: View {
                 faces(landscape, w, h)
                 sticks(landscape, w, h)
             }
+            .coordinateSpace(name: Self.padSpace)
         }
     }
 
@@ -331,22 +336,19 @@ private struct CompositeDPad: View {
                 .contentShape(Circle())
                 .position(centroid)
                 .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { v in
-                            let offset = CGPoint(x: v.location.x - r, y: v.location.y - r)
-                            apply(resolve(offset: offset))
-                        }
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(VirtualControllerView.padSpace))
+                        .onChanged { v in apply(resolve(point: v.location)) }
                         .onEnded { _ in apply([]) }
                 )
         }
     }
 
-    /// Map a touch offset (from the capture centre) to 0–2 directions.
-    private func resolve(offset: CGPoint) -> Set<PadButton> {
-        let distance = hypot(offset.x, offset.y)
-        if distance < deadzone { return [] }
+    /// Map an absolute touch point (in the controller's coordinate space) to
+    /// 0–2 directions.
+    private func resolve(point: CGPoint) -> Set<PadButton> {
         let c = centroid
-        let point = CGPoint(x: c.x + offset.x, y: c.y + offset.y)
+        let distance = hypot(point.x - c.x, point.y - c.y)
+        if distance < deadzone { return [] }
         // Faces whose hitbox contains the point.
         let hits = faces.filter {
             abs(point.x - $0.center.x) <= $0.touchHalf &&
