@@ -46,6 +46,16 @@ struct VirtualControllerView: View {
     var layout: PadLayoutStore = .shared
     var core: EmuCore? = AppState.shared.core
 
+    /// Orientation is passed in explicitly, never derived from the geometry.
+    /// The portrait controller deck is wider than it is tall, so deriving
+    /// orientation from the view's aspect ratio would misreport it as landscape.
+    var isLandscape: Bool = false
+
+    /// When on, the four d-pad faces share one circular touch surface that
+    /// resolves a press into one or two directions (fluid diagonals). This is
+    /// the prior project's default d-pad behaviour.
+    var dpadDiagonals: Bool = true
+
     // Base render size of the analog stick at scale 1.0 (points).
     private let stickBase: CGFloat = 68
 
@@ -70,7 +80,7 @@ struct VirtualControllerView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let landscape = geo.size.width >= geo.size.height
+            let landscape = isLandscape
             let w = geo.size.width, h = geo.size.height
             ZStack {
                 shoulders(landscape, w, h)
@@ -102,12 +112,40 @@ struct VirtualControllerView: View {
 
     @ViewBuilder
     private func directions(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
-        Group {
-            imageControl("up", "sig_up", .up, .rect, group: false, l, w, h)
-            imageControl("down", "sig_down", .down, .rect, group: false, l, w, h)
-            imageControl("left", "sig_left", .left, .rect, group: false, l, w, h)
-            imageControl("right", "sig_right", .right, .rect, group: false, l, w, h)
+        if dpadDiagonals {
+            let faces = dpadFaces(l, w, h)
+            if !faces.isEmpty {
+                CompositeDPad(faces: faces, core: core)
+            }
+        } else {
+            Group {
+                imageControl("up", "sig_up", .up, .rect, group: false, l, w, h)
+                imageControl("down", "sig_down", .down, .rect, group: false, l, w, h)
+                imageControl("left", "sig_left", .left, .rect, group: false, l, w, h)
+                imageControl("right", "sig_right", .right, .rect, group: false, l, w, h)
+            }
         }
+    }
+
+    /// The four d-pad faces resolved to on-screen geometry, feeding the shared
+    /// composite touch surface. Each face keeps the exact centre, visual size
+    /// and (independent) touch half-extents the separate buttons would use, so
+    /// the art is pixel-identical — only the touch handling is unified.
+    private func dpadFaces(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> [DPadFace] {
+        let specs: [(String, String, PadButton)] = [
+            ("up", "sig_up", .up), ("down", "sig_down", .down),
+            ("left", "sig_left", .left), ("right", "sig_right", .right),
+        ]
+        var faces: [DPadFace] = []
+        for (id, asset, btn) in specs where layout.isControlVisible(id) {
+            let (c, s, hit) = center(id, group: false, l, w, h)
+            let base = baseSize(id, l)
+            let vis = PadLayoutMetrics.visibleLength(baseLength: base.width, visibleScale: s)
+            let touch = PadLayoutMetrics.touchLength(baseLength: base.width, hitScale: hit)
+            faces.append(DPadFace(id: id, asset: asset, button: btn,
+                                  center: c, visual: vis, touchHalf: touch / 2))
+        }
+        return faces
     }
 
     @ViewBuilder
@@ -235,5 +273,107 @@ private struct AnalogStick: View {
                 }
                 .onEnded { _ in active = false; thumb = .zero; onChange(0, 0) }
         )
+    }
+}
+
+// MARK: - Composite d-pad (one touch surface, 1–2 directions)
+
+/// One face of the composite d-pad: identical art and geometry to a standalone
+/// direction button, but driven by the shared touch surface rather than its own.
+struct DPadFace: Identifiable {
+    let id: String
+    let asset: String
+    let button: PadButton
+    let center: CGPoint      // on-screen centre in the controller's coordinate space
+    let visual: CGFloat      // rendered art size (points, square)
+    let touchHalf: CGFloat   // half the touch extent (points) — hitbox reaches this far from centre
+}
+
+/// Renders the four faces at their exact centres, then overlays a single
+/// circular capture area. A touch inside the area is resolved into the one or
+/// two directions whose hitboxes it falls in — the corners overlap, so a
+/// diagonal press lights both neighbours. This is the prior project's default.
+private struct CompositeDPad: View {
+    let faces: [DPadFace]
+    var core: EmuCore?
+    @State private var pressed: Set<PadButton> = []
+
+    private var centroid: CGPoint {
+        guard !faces.isEmpty else { return .zero }
+        let sx = faces.reduce(0) { $0 + $1.center.x }
+        let sy = faces.reduce(0) { $0 + $1.center.y }
+        return CGPoint(x: sx / CGFloat(faces.count), y: sy / CGFloat(faces.count))
+    }
+
+    private var captureRadius: CGFloat {
+        let c = centroid
+        let maxCenterDist = faces.map { hypot($0.center.x - c.x, $0.center.y - c.y) }.max() ?? 0
+        let maxTouchHalf = faces.map { $0.touchHalf }.max() ?? 0
+        return maxCenterDist + maxTouchHalf
+    }
+
+    private var deadzone: CGFloat {
+        let c = centroid
+        let minCenterDist = faces.map { hypot($0.center.x - c.x, $0.center.y - c.y) }.min() ?? 0
+        return minCenterDist * 0.20
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(faces) { face in
+                skinImage(face.asset, ignited: pressed.contains(face.button))
+                    .frame(width: face.visual, height: face.visual)
+                    .position(face.center)
+            }
+            let r = captureRadius
+            Color.clear
+                .frame(width: r * 2, height: r * 2)
+                .contentShape(Circle())
+                .position(centroid)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { v in
+                            let offset = CGPoint(x: v.location.x - r, y: v.location.y - r)
+                            apply(resolve(offset: offset))
+                        }
+                        .onEnded { _ in apply([]) }
+                )
+        }
+    }
+
+    /// Map a touch offset (from the capture centre) to 0–2 directions.
+    private func resolve(offset: CGPoint) -> Set<PadButton> {
+        let distance = hypot(offset.x, offset.y)
+        if distance < deadzone { return [] }
+        let c = centroid
+        let point = CGPoint(x: c.x + offset.x, y: c.y + offset.y)
+        // Faces whose hitbox contains the point.
+        let hits = faces.filter {
+            abs(point.x - $0.center.x) <= $0.touchHalf &&
+            abs(point.y - $0.center.y) <= $0.touchHalf
+        }
+        if hits.isEmpty {
+            // Outside every hitbox — snap to the single nearest face.
+            if let nearest = faces.min(by: {
+                hypot(point.x - $0.center.x, point.y - $0.center.y) <
+                hypot(point.x - $1.center.x, point.y - $1.center.y)
+            }) { return [nearest.button] }
+            return []
+        }
+        if hits.count == 1 { return [hits[0].button] }
+        // Overlap region — take the two nearest for a clean diagonal.
+        let ordered = hits.sorted {
+            hypot(point.x - $0.center.x, point.y - $0.center.y) <
+            hypot(point.x - $1.center.x, point.y - $1.center.y)
+        }
+        return Set(ordered.prefix(2).map { $0.button })
+    }
+
+    /// Diff the resolved set against the live one and forward only the edges.
+    private func apply(_ next: Set<PadButton>) {
+        guard next != pressed else { return }
+        for b in next.subtracting(pressed) { core?.setButton(b, pressed: true) }
+        for b in pressed.subtracting(next) { core?.setButton(b, pressed: false) }
+        pressed = next
     }
 }

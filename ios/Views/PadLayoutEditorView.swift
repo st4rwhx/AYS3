@@ -18,11 +18,29 @@ struct PadLayoutEditorView: View {
         GeometryReader { geo in
             let landscape = geo.size.width >= geo.size.height
             let w = geo.size.width, h = geo.size.height
+            // Chips are laid out in the same area the live controls occupy:
+            // the whole screen in landscape, the bottom deck in portrait. This
+            // keeps the editor's normalized positions aligned with gameplay.
+            let gameHeight = landscape ? 0 : min(w * 3 / 4, h * 0.55)
+            let originY = gameHeight
+            let areaW = w
+            let areaH = h - gameHeight
             ZStack(alignment: .bottom) {
                 Color.black.opacity(0.55).ignoresSafeArea()
                     .onTapGesture { }   // swallow taps on the dim layer
 
-                chips(landscape, w, h)
+                if !landscape {
+                    // Mirror the gameplay split so the deck edge is visible.
+                    Rectangle()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: areaW, height: areaH)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(PS3.cyan.opacity(0.4)).frame(height: 1)
+                        }
+                        .position(x: originY == 0 ? w / 2 : areaW / 2, y: originY + areaH / 2)
+                }
+
+                chips(landscape, originY, areaW, areaH)
 
                 topBar(landscape)
                     .frame(maxHeight: .infinity, alignment: .top)
@@ -39,7 +57,7 @@ struct PadLayoutEditorView: View {
     // MARK: Chips
 
     @ViewBuilder
-    private func chips(_ l: Bool, _ w: CGFloat, _ h: CGFloat) -> some View {
+    private func chips(_ l: Bool, _ originY: CGFloat, _ areaW: CGFloat, _ areaH: CGFloat) -> some View {
         ForEach(groups, id: \.self) { id in
             let p = layout.position(for: id, landscape: l)
             let size = chipSize(id, p.scale)
@@ -53,14 +71,14 @@ struct PadLayoutEditorView: View {
                     .foregroundStyle(.white).minimumScaleFactor(0.5).padding(4)
             }
             .frame(width: size.width, height: size.height)
-            .position(x: p.x * w, y: p.y * h)
+            .position(x: p.x * areaW, y: originY + p.y * areaH)
             .gesture(
                 DragGesture(coordinateSpace: .named(Self.space))
                     .onChanged { v in
                         selected = id
                         var np = layout.position(for: id, landscape: l)
-                        np.x = min(max(v.location.x / w, 0), 1)
-                        np.y = min(max(v.location.y / h, 0), 1)
+                        np.x = min(max(v.location.x / areaW, 0), 1)
+                        np.y = min(max((v.location.y - originY) / areaH, 0), 1)
                         layout.setGroupPosition(np, for: id, landscape: l)
                     }
             )
