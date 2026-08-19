@@ -329,7 +329,16 @@ struct GameScreenView: View {
     }
 
     private var playButton: some View {
-        Button { playing = true } label: {
+        Button {
+            // In the merged build, boot a real imported game through the core
+            // (falls back to the selected title so the boot path still runs and
+            // reports its result). The frontend build just shows the preview.
+            #if IPS3_WITH_CORE
+            let target = AppState.shared.core?.availableGames().first?.fileName ?? game.title
+            AppState.shared.bootGame(name: target)
+            #endif
+            playing = true
+        } label: {
             HStack(spacing: 8) {
                 Text("✕").font(.system(size: 15))
                     .frame(width: 26, height: 26)

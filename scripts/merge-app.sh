@@ -55,6 +55,7 @@ SWIFT_SRC=$(ls "${ROOT}"/ios/App.swift \
 echo "== compiling Swift ($(echo "${SWIFT_SRC}" | wc -w | tr -d ' ') files) =="
 "${SWIFTC}" -target "${TARGET}" -sdk "${SDK}" -O -wmo -parse-as-library \
   -module-name iPS3 \
+  -D IPS3_WITH_CORE \
   -import-objc-header "${ROOT}/ios/Core/iPS3-Bridging-Header.h" \
   -emit-object -o "${OUT}/ips3_swift.o" \
   ${SWIFT_SRC}

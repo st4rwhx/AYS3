@@ -21,6 +21,14 @@ struct iPS3App: App {
                     // effective?), captured before anything else runs.
                     MemoryReport.shared.logVAProbe()
                     MemoryReport.shared.log("launch")
+                    // In the merged build, plug the real PS3 core into AppState
+                    // so the library's PLAY button drives an actual boot. The
+                    // pure-Swift frontend build has no core and skips this.
+                    #if IPS3_WITH_CORE
+                    if AppState.shared.core == nil {
+                        AppState.shared.core = PS3Core()
+                    }
+                    #endif
                 }
         }
     }
