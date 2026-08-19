@@ -49,7 +49,10 @@ struct GamePlayView: View {
         .preferredColorScheme(.dark)
     }
 
-    // Placeholder "game surface" until the core is linked.
+    // Placeholder "game surface" until the core is linked. Doubles as a live
+    // memory readout: phys_footprint + margin before jetsam, the numbers the
+    // whole memory plan is judged on. Reads correctly on-device; on the
+    // simulator/desktop the margin shows "n/a" (no jetsam there).
     private var gameSurface: some View {
         ZStack {
             Color.black
@@ -58,7 +61,14 @@ struct GamePlayView: View {
                 Text("core not linked yet — controller preview")
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.35))
+                Text(MemoryReport.shared.readout)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(PS3.cyan.opacity(0.8))
             }
+        }
+        .onAppear { MemoryReport.shared.log("gameplay:appear") }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            MemoryReport.shared.refresh()
         }
     }
 
