@@ -39,7 +39,11 @@ fi
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 SWIFTC="$(xcrun --sdk iphoneos -f swiftc)"
 CLANGXX="$(xcrun --sdk iphoneos -f clang++)"
-TARGET="arm64-apple-ios16.3"
+# The SwiftUI frontend uses @Observable (iOS 17+), so the merged app's minimum
+# is 17.0 — higher than the core's 16.3. Objects built at 16.3 link fine into a
+# 17.0 binary (the reverse would not), so we bump BOTH the Swift compile and the
+# replayed link line to 17.0 below.
+TARGET="arm64-apple-ios17.0"
 OUT="${WORK}/ips3-merge"; rm -rf "${OUT}"; mkdir -p "${OUT}"
 echo "sdk=${SDK}"; echo "swiftc=${SWIFTC}"
 
@@ -72,6 +76,10 @@ LINK="${LINK#*: && }"
 LINK="${LINK% && :}"
 LINK="${LINK//rpcs3\/CMakeFiles\/ays3_app.dir\/ays3_ramprobe.mm.o/}"
 LINK="${LINK//-o bin\/ays3_app.app\/ays3_app/-o ${OUT}/iPS3}"
+# Bump the recipe's 16.3 min-version to 17.0 (the merged app's real minimum, set
+# by @Observable). Lower-minos core archives still link into the 17.0 binary.
+LINK="${LINK//arm64-apple-ios16.3/arm64-apple-ios17.0}"
+LINK="${LINK//-miphoneos-version-min=16.3/-miphoneos-version-min=17.0}"
 echo "== linking merged app =="
 ( cd "${BUILD}" && eval "${LINK} \
     ${OUT}/ips3_swift.o ${OUT}/PS3Core.o \
