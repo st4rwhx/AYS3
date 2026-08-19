@@ -37,16 +37,64 @@
 #define P_TRACED 0x00000800
 #endif
 
-// Minimal seam-style declaration: enough to CALL Emulator::Init() on the real
-// global. The real object AND the real code live in rpcs3_emu.a; we only need
-// the mangled symbol name to match. We never construct an Emulator here, so its
-// true layout/size is irrelevant to this translation unit — `Emu` is the real
-// global (defined in the core) and `&Emu` is its real address.
+#include <string>
+#include <optional>
+
+// Minimal seam-style declaration: enough to CALL Emulator::Init()/BootGame() on
+// the real global. The real object AND the real code live in rpcs3_emu.a; we
+// only need the mangled symbol name to match. We never construct an Emulator
+// here, so its true layout/size is irrelevant to this translation unit — `Emu`
+// is the real global (defined in the core) and `&Emu` is its real address.
+//
+// game_boot_result: matched verbatim from Emu/System.h so we can decode the
+// return code into a readable verdict.
+enum class game_boot_result : unsigned int {
+	no_errors, generic_error, nothing_to_boot, wrong_disc_location,
+	invalid_file_or_folder, invalid_bdvd_folder, install_failed,
+	decryption_error, file_creation_error, firmware_missing, firmware_version,
+	unsupported_disc_type, savestate_corrupted, savestate_version_unsupported,
+	still_running, already_added, currently_restricted, database_config_missing,
+};
+// cfg_mode: only the TYPE NAME drives the mangling of BootGame, so an
+// opaque-enum-declaration is enough. We pass mode 0 (the first mode, "custom")
+// via a cast rather than naming an enumerator whose value we did not verify.
+enum class cfg_mode : int;
 class Emulator {
 public:
 	void Init();   // RPCS3 master signature: no args (was Init(bool) historically)
+	// Exact signature from Emu/System.h (defaults omitted — they do not affect
+	// the mangled symbol; we pass all six arguments explicitly at the call site).
+	game_boot_result BootGame(const std::string& path, const std::string& title_id,
+		bool direct, cfg_mode config_mode, const std::string& config_path,
+		const std::optional<std::string>& db_config);
 };
 extern Emulator Emu;
+
+// Decode a BootGame return code into a short readable verdict for the label.
+static const char* ays3_boot_result_name(game_boot_result r)
+{
+	switch (r) {
+		case game_boot_result::no_errors:                    return "no_errors ✓";
+		case game_boot_result::generic_error:                return "generic_error";
+		case game_boot_result::nothing_to_boot:              return "nothing_to_boot";
+		case game_boot_result::wrong_disc_location:          return "wrong_disc_location";
+		case game_boot_result::invalid_file_or_folder:       return "invalid_file_or_folder";
+		case game_boot_result::invalid_bdvd_folder:          return "invalid_bdvd_folder";
+		case game_boot_result::install_failed:               return "install_failed";
+		case game_boot_result::decryption_error:             return "decryption_error";
+		case game_boot_result::file_creation_error:          return "file_creation_error";
+		case game_boot_result::firmware_missing:             return "firmware_missing (install PS3 firmware)";
+		case game_boot_result::firmware_version:             return "firmware_version";
+		case game_boot_result::unsupported_disc_type:        return "unsupported_disc_type";
+		case game_boot_result::savestate_corrupted:          return "savestate_corrupted";
+		case game_boot_result::savestate_version_unsupported:return "savestate_version_unsupported";
+		case game_boot_result::still_running:                return "still_running";
+		case game_boot_result::already_added:                return "already_added";
+		case game_boot_result::currently_restricted:         return "currently_restricted";
+		case game_boot_result::database_config_missing:      return "database_config_missing";
+	}
+	return "unknown";
+}
 
 static double ays3_resident_mb(void)
 {
@@ -266,11 +314,15 @@ static NSString* ays3_run_jit_probe(void)
 	UILabel*  _label;
 	UIButton* _initBtn;
 	UIButton* _jitBtn;
+	UIButton* _bootBtn;
 	NSDate*   _start;
 	double    _rssBefore;
 	double    _rssAfter;
+	double    _bootRSSBefore;
+	double    _bootRSSAfter;
 	NSString* _initState;   // "not called" | "running…" | "returned" | "crashed"
 	NSString* _jitState;    // "not run" | multi-line verdict
+	NSString* _bootState;   // "not run" | "running…" | boot-result verdict
 }
 - (void)viewDidLoad
 {
@@ -279,8 +331,11 @@ static NSString* ays3_run_jit_probe(void)
 	_start = [NSDate date];
 	_rssBefore = -1.0;
 	_rssAfter  = -1.0;
+	_bootRSSBefore = -1.0;
+	_bootRSSAfter  = -1.0;
 	_initState = @"not called";
 	_jitState  = @"not run";
+	_bootState = @"not run";
 
 	// If we got this far, static init did not abort — Wall #17 held.
 	ays3_stage(@"launched: static-init OK (Wall #17 held), core linked");
@@ -315,6 +370,17 @@ static NSString* ays3_run_jit_probe(void)
 	[_jitBtn addTarget:self action:@selector(testJIT) forControlEvents:UIControlEventTouchUpInside];
 	[self.view addSubview:_jitBtn];
 
+	_bootBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+	_bootBtn.translatesAutoresizingMaskIntoConstraints = NO;
+	[_bootBtn setTitle:@"▶  Boot (measure RSS)" forState:UIControlStateNormal];
+	_bootBtn.titleLabel.font = [UIFont monospacedSystemFontOfSize:18.0 weight:UIFontWeightBold];
+	[_bootBtn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+	_bootBtn.backgroundColor = [UIColor colorWithRed:0.6 green:0.8 blue:1.0 alpha:1.0];
+	_bootBtn.layer.cornerRadius = 12.0;
+	_bootBtn.contentEdgeInsets = UIEdgeInsetsMake(14, 24, 14, 24);
+	[_bootBtn addTarget:self action:@selector(callBoot) forControlEvents:UIControlEventTouchUpInside];
+	[self.view addSubview:_bootBtn];
+
 	UILayoutGuide* g = self.view.safeAreaLayoutGuide;
 	[NSLayoutConstraint activateConstraints:@[
 		[_label.leadingAnchor  constraintEqualToAnchor:g.leadingAnchor  constant:16],
@@ -324,6 +390,8 @@ static NSString* ays3_run_jit_probe(void)
 		[_initBtn.topAnchor     constraintEqualToAnchor:_label.bottomAnchor constant:28],
 		[_jitBtn.centerXAnchor  constraintEqualToAnchor:g.centerXAnchor],
 		[_jitBtn.topAnchor      constraintEqualToAnchor:_initBtn.bottomAnchor constant:14],
+		[_bootBtn.centerXAnchor constraintEqualToAnchor:g.centerXAnchor],
+		[_bootBtn.topAnchor     constraintEqualToAnchor:_jitBtn.bottomAnchor constant:14],
 	]];
 
 	// Touch the core global so it is definitely part of the resident image.
@@ -360,6 +428,11 @@ static NSString* ays3_run_jit_probe(void)
 			_rssBefore, _rssAfter, _rssAfter - _rssBefore];
 	}
 	[s appendFormat:@"\n\nJIT:\n%@", _jitState];
+	[s appendFormat:@"\n\nBoot: %@", _bootState];
+	if (_bootRSSBefore >= 0.0 && _bootRSSAfter >= 0.0) {
+		[s appendFormat:@"\nRSS %.1f → %.1f MB  (Δ %+.1f)",
+			_bootRSSBefore, _bootRSSAfter, _bootRSSAfter - _bootRSSBefore];
+	}
 	_label.text = s;
 }
 
@@ -415,6 +488,52 @@ static NSString* ays3_run_jit_probe(void)
 				   dispatch_get_main_queue(), ^{
 		self->_jitState = ays3_run_jit_probe();
 		[self->_jitBtn setTitle:@"JIT probe done ✓ (see label)" forState:UIControlStateNormal];
+		[self refresh];
+	});
+}
+
+// Measure the memory cost of BootGame. Boots the first entry the import handler
+// placed in Documents/Games. NOTE: a *successful* game boot additionally needs
+// the RPCS3 VFS (dev_flash firmware + dev_hdd0), a later milestone — until then
+// this reports how far BootGame gets (its result code) and the RSS it touched,
+// which is exactly the staged footprint number we want to start tracking.
+- (void)callBoot
+{
+	NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+	NSString* games = [dirs.firstObject stringByAppendingPathComponent:@"Games"];
+	NSString* target = nil;
+	for (NSString* name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:games error:nil]) {
+		if ([name hasPrefix:@"."]) continue;
+		target = [games stringByAppendingPathComponent:name];
+		break;
+	}
+	if (target == nil) {
+		_bootState = @"no game in Documents/Games — import one first";
+		[self refresh];
+		return;
+	}
+
+	_bootBtn.enabled = NO;
+	_bootBtn.alpha = 0.4;
+	[_bootBtn setTitle:@"booting…" forState:UIControlStateNormal];
+	_bootState = @"running…";
+	_bootRSSBefore = ays3_resident_mb();
+	[self refresh];
+	ays3_stage([NSString stringWithFormat:@"pre-Boot: rss=%.1f MB — BootGame(%@)",
+		_bootRSSBefore, target.lastPathComponent]);
+
+	std::string path = target.UTF8String;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+				   dispatch_get_main_queue(), ^{
+		// Six args explicit (defaults are not part of the mangled symbol). Mode 0
+		// is the first cfg_mode ("custom"); passed via cast, no enumerator guess.
+		game_boot_result r = Emu.BootGame(path, std::string(), false,
+			static_cast<cfg_mode>(0), std::string(), std::optional<std::string>());
+		self->_bootRSSAfter = ays3_resident_mb();
+		self->_bootState = [NSString stringWithUTF8String:ays3_boot_result_name(r)];
+		ays3_stage([NSString stringWithFormat:@"post-Boot: result=%@ rss=%.1f MB (Δ %+.1f)",
+			self->_bootState, self->_bootRSSAfter, self->_bootRSSAfter - self->_bootRSSBefore]);
+		[self->_bootBtn setTitle:@"Boot done ✓ (see label)" forState:UIControlStateNormal];
 		[self refresh];
 	});
 }
