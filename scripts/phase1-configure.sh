@@ -638,6 +638,28 @@ if [ "${IOS_CFG_EXIT}" = "0" ] && [ -f "${WORK}/build-ios/build.ninja" ]; then
     ninja -C "${WORK}/build-ios" -k 0 -j3 ays3_app \
       2>&1 | tee "${LOG_DIR}/50-app-build.log"
     echo "app build exit: ${PIPESTATUS[0]}" | tee -a "${LOG_DIR}/50-app-build.log"
+
+    # --- 6b. Export the linked core for the MERGED SwiftUI app (step 2a) -------
+    # SwiftUI must build with the Xcode generator; the core builds with Ninja. So
+    # we do NOT compile Swift in this tree (that risks breaking the working core
+    # build). Instead we EXPORT exactly what the merged app needs to LINK:
+    #   * the authoritative ays3_app link command (lib + flag order), and
+    #   * every static archive that command references.
+    # The merged app's own Xcode-generator CMake replays this recipe to link the
+    # Ninja-built core into the Xcode-built SwiftUI binary. Side-effect-free.
+    echo "== exporting core link recipe for the merged app (2a) =="
+    ninja -C "${WORK}/build-ios" -t commands ays3_app > "${ROOT}/core-build-commands.txt" 2>/dev/null || true
+    grep -E -- "-o [^ ]*ays3_app( |$)" "${ROOT}/core-build-commands.txt" | tail -1 > "${ROOT}/core-link.txt" || true
+    EXPORT="${WORK}/core-export"; rm -rf "${EXPORT}"; mkdir -p "${EXPORT}/lib"
+    # Only the archives the link line actually references (keeps the export lean;
+    # the LLVM/core .a are large).
+    grep -oE "[^ ]+\.a" "${ROOT}/core-link.txt" 2>/dev/null | sort -u > "${ROOT}/core-libs-list.txt" || true
+    while IFS= read -r a; do [ -f "${a}" ] && cp "${a}" "${EXPORT}/lib/" 2>/dev/null; done < "${ROOT}/core-libs-list.txt"
+    [ -f "${STUBLIBS}/librt.a" ] && cp "${STUBLIBS}/librt.a" "${EXPORT}/lib/" 2>/dev/null || true
+    cp "${ROOT}/core-link.txt" "${EXPORT}/" 2>/dev/null || true
+    ( cd "${EXPORT}" && tar czf "${ROOT}/core-export.tar.gz" . ) 2>/dev/null || true
+    echo "  core export: $(du -h "${ROOT}/core-export.tar.gz" 2>/dev/null | cut -f1) — $(ls -1 "${EXPORT}/lib" 2>/dev/null | wc -l | tr -d ' ') archives, link recipe $(wc -l < "${ROOT}/core-link.txt" 2>/dev/null || echo 0) line" \
+      | tee -a "${LOG_DIR}/50-app-build.log"
     # CMake's MACOSX_BUNDLE under the *Ninja* generator emits a macOS-style
     # bundle: ays3_app.app/Contents/MacOS/ays3_app + Contents/Info.plist. iOS —
     # and ldid, the signer SideStore/AltStore run at install — require a FLAT

@@ -105,6 +105,19 @@ jobs:
           path: AYS3.ipa
           if-no-files-found: warn
 
+      # Step 2a: the exported core (link recipe + referenced archives) that the
+      # merged SwiftUI app links against in step 2b.
+      - name: Upload core export (for merged app)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-export
+          path: |
+            core-export.tar.gz
+            core-link.txt
+            core-libs-list.txt
+          if-no-files-found: warn
+
       - name: Publish versioned release (new version every successful build)
         if: always()
         env:
