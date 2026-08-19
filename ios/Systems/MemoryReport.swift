@@ -91,6 +91,64 @@ final class MemoryReport: @unchecked Sendable {
         return String(format: "mem %.0f MB", s.physFootprintMB)
     }
 
+    // MARK: - Virtual-address probe (is extended-virtual-addressing effective?)
+
+    struct VAProbe: Sendable {
+        let maxReservableGiB: Double
+        /// Coarse verdict for the log line.
+        let verdict: String
+    }
+
+    /// The core reserves tens of GiB of virtual address at load (its biggest
+    /// single region is ~32 GiB). Without the extended-virtual-addressing
+    /// entitlement TAKING EFFECT, iOS caps the process's address space (~4 GiB
+    /// here) and those reservations fall back to a tiny size — Init still runs,
+    /// but no game can boot. Declaring the entitlement is not the same as it
+    /// being honoured by the signer, so we do not read the plist: we MEASURE the
+    /// largest PROT_NONE / MAP_NORESERVE reservation the process can actually
+    /// make. That empirical ceiling is the real gate.
+    static func probeReservableVA() -> VAProbe {
+        let gib: UInt64 = 1 << 30
+        let sizes: [UInt64] = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64].map { $0 * gib }
+        var best: UInt64 = 0
+        for s in sizes {
+            let p = mmap(nil, Int(s), PROT_NONE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0)
+            if p == MAP_FAILED { break }         // once one size fails, larger ones will too
+            best = s
+            munmap(p, Int(s))
+        }
+        let gibValue = Double(best) / Double(gib)
+        let verdict: String
+        switch best {
+        case let b where b >= 32 * gib: verdict = "extended-VA EFFECTIVE (full reservation possible)"
+        case let b where b >= 8 * gib:  verdict = "PARTIAL — larger than default cap but under the 32 GiB the core wants"
+        default:                        verdict = "CAPPED — extended-VA NOT effective; games cannot boot"
+        }
+        return VAProbe(maxReservableGiB: gibValue, verdict: verdict)
+    }
+
+    /// Run the VA probe once and write the verdict to the log. Idempotent.
+    private var didProbeVA = false
+    func logVAProbe() {
+        guard !didProbeVA else { return }
+        didProbeVA = true
+        let p = Self.probeReservableVA()
+        let line = String(format: "va-probe: max_reservable=%.0f GiB — %@", p.maxReservableGiB, p.verdict)
+        NSLog("[iPS3 Mem] %@", line)
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let entry = "\(stamp)  \(line)\n"
+        if let data = entry.data(using: .utf8) {
+            let url = logURL
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? ("iPS3 memory log\n" + entry).data(using: .utf8)?.write(to: url)
+            }
+        }
+    }
+
     // MARK: - Raw metrics
 
     /// `phys_footprint` from task_vm_info — the jetsam accounting value.

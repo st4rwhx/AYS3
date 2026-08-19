@@ -15,6 +15,13 @@ struct iPS3App: App {
             RootView()
                 .environment(\.layoutDirection, language.layoutDirection)
                 .preferredColorScheme(.dark)
+                .task {
+                    // Measure the real VA ceiling once at launch: this is the
+                    // gate for whether a game can boot at all (extended-VA
+                    // effective?), captured before anything else runs.
+                    MemoryReport.shared.logVAProbe()
+                    MemoryReport.shared.log("launch")
+                }
         }
     }
 }
