@@ -156,8 +156,8 @@ jobs:
           # version baked into the filename. A build that yields NO IPA fails
           # LOUDLY (red job) instead of silently leaving an old release looking
           # current — so "is this broken?" is never ambiguous again.
-          if [ ! -f AYS3.ipa ]; then
-            echo "::error::Build produced NO IPA — this build is broken. Nothing released this run; the newest working release stays Latest, but this run is marked failed."
+          if [ ! -f iPS3.ipa ]; then
+            echo "::error::Merged app (iPS3.ipa) NOT produced — not releasing. The ramprobe is a diagnostic-only build and is never published; failing loudly instead of shipping the wrong app."
             exit 1
           fi
 
@@ -178,13 +178,10 @@ jobs:
           TAG="v${VER}"
           SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
           ASSET="iPS3-v${VER}.ipa"
-          cp AYS3.ipa "${ASSET}"
-          # Companion symbol map for crash symbolication (nm dump, gzipped).
+          cp iPS3.ipa "${ASSET}"   # the MERGED app (UI + core), not the ramprobe
+          # No symbol map for the merged binary yet (the ramprobe's map does not
+          # match it) — skip rather than attach a misleading one.
           SYMS=""
-          if [ -f ays3-symbols.txt.gz ]; then
-            SYMS="iPS3-v${VER}-symbols.txt.gz"
-            cp ays3-symbols.txt.gz "${SYMS}"
-          fi
 
           # One-time cleanup: retire the old rolling "v1.00" roulette release.
           gh release delete v1.00 --yes --cleanup-tag 2>/dev/null || true
