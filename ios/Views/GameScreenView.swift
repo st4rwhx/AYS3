@@ -128,6 +128,15 @@ struct GameScreenView: View {
                     .foregroundStyle(PS3.muted)
             }
             Spacer()
+            FileImportButton {
+                HStack(spacing: 5) {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("IMPORT").font(.system(size: 11, weight: .bold)).tracking(1)
+                }
+                .foregroundStyle(PS3.text)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .glassPanel(cornerRadius: 10)
+            }
             bumper("L1")
             HStack(spacing: 4) {
                 ForEach(MediaTab.allCases) { t in

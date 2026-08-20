@@ -129,7 +129,7 @@ final class FileImportHandler: @unchecked Sendable {
                           destinationPath: nil)
         }
 
-        let label = kind == .firmware ? "Firmware installed" : "Game imported"
+        let label = kind == .firmware ? "Firmware imported (installs on first launch)" : "Game imported"
         return Result(sourceName: name, success: true,
                       message: "\(label): \(dest.lastPathComponent)",
                       destinationPath: dest.path)
