@@ -31,8 +31,10 @@ final class PS3Core: EmuCore, @unchecked Sendable {
     func boot(game fileName: String) {
         if !didInit {
             // Repoint dev_flash / dev_hdd0 into the writable sandbox first, then
-            // bring the core up.
+            // install firmware (once) if the user imported a .PUP, then bring the
+            // core up.
             ips3_core_setup_vfs(Self.documents.path)
+            installFirmwareIfNeeded()
             ips3_core_init()
             didInit = true
         }
@@ -45,6 +47,23 @@ final class PS3Core: EmuCore, @unchecked Sendable {
               fileName, name, ips3_core_footprint_mb())
         state = (code == 0) ? .running : .stopped
         currentGame = (code == 0) ? fileName : nil
+    }
+
+    /// Install the imported firmware into dev_flash once. The user drops a
+    /// PS3UPDAT.PUP via import (Documents/Firmware/); on the first boot we unpack
+    /// it into dev_flash so games stop returning firmware_missing.
+    private func installFirmwareIfNeeded() {
+        let key = "ips3.firmwareInstalled"
+        if UserDefaults.standard.bool(forKey: key) { return }
+        let fw = Self.documents.appendingPathComponent("Firmware", isDirectory: true)
+        let pups = (try? FileManager.default.contentsOfDirectory(atPath: fw.path)) ?? []
+        guard let pup = pups.first(where: { $0.lowercased().hasSuffix(".pup") }) else { return }
+        let path = fw.appendingPathComponent(pup).path
+        MemoryReport.shared.log("pre-fw-install")
+        let rc = ips3_core_install_firmware(path)
+        MemoryReport.shared.log("post-fw-install:rc=\(rc)")
+        NSLog("[iPS3 PS3Core] install_firmware(%@) -> %d", pup, rc)
+        if rc == 0 { UserDefaults.standard.set(true, forKey: key) }
     }
 
     func shutdown() { state = .stopped; currentGame = nil }

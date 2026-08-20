@@ -20,6 +20,10 @@ extern "C" {
 // ays3_vfs.cpp (it touches real core internals).
 void ips3_core_setup_vfs(const char* base);
 
+// Install a PS3UPDAT.PUP firmware into dev_flash (headless port of InstallPup).
+// Returns 0 on success, negative on failure. Call after setup_vfs, before boot.
+int ips3_core_install_firmware(const char* pup_path);
+
 // Initialise the core (Emulator::Init). Safe to call once at startup.
 void ips3_core_init(void);
 
