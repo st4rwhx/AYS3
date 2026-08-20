@@ -14,6 +14,12 @@
 extern "C" {
 #endif
 
+// Point the core's VFS (dev_flash / dev_hdd0 / …) at a writable base directory
+// (the app sandbox). MUST be called before init/boot on iOS, where the default
+// emulator dir is the read-only app bundle. Implemented in the core-tree file
+// ays3_vfs.cpp (it touches real core internals).
+void ips3_core_setup_vfs(const char* base);
+
 // Initialise the core (Emulator::Init). Safe to call once at startup.
 void ips3_core_init(void);
 

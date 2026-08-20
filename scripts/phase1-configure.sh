@@ -339,6 +339,7 @@ PROBE
     # App seam glue + RAM-probe app sources (versioned in the AYS3 repo under app/).
     cp "${ROOT}/app/ays3_seam.cpp"     "${RPCS3_DIR}/rpcs3/ays3_seam.cpp"
     cp "${ROOT}/app/ays3_ramprobe.mm"  "${RPCS3_DIR}/rpcs3/ays3_ramprobe.mm"
+    cp "${ROOT}/app/ays3_vfs.cpp"      "${RPCS3_DIR}/rpcs3/ays3_vfs.cpp"
     cp "${ROOT}/app/ays3_Info.plist"   "${RPCS3_DIR}/rpcs3/ays3_Info.plist"
     cat >> "${rc2}" <<'CM'
 
@@ -362,9 +363,13 @@ endif()
 if(AYS3_APP)
     add_executable(ays3_app MACOSX_BUNDLE
         ${CMAKE_CURRENT_SOURCE_DIR}/ays3_ramprobe.mm
-        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_seam.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_seam.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ays3_vfs.cpp)
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ays3_ramprobe.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    # ays3_vfs.cpp calls real core internals (g_cfg_vfs), so it needs the core's
+    # include root (rpcs3/) — this dir — to resolve "Emu/vfs_config.h".
+    target_include_directories(ays3_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(ays3_app PRIVATE rpcs3_emu "-framework AVFoundation")
     target_link_options(ays3_app PRIVATE "SHELL:-liconv")
     set_target_properties(ays3_app PROPERTIES

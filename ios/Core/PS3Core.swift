@@ -29,7 +29,13 @@ final class PS3Core: EmuCore, @unchecked Sendable {
 
     // MARK: Lifecycle
     func boot(game fileName: String) {
-        if !didInit { ips3_core_init(); didInit = true }
+        if !didInit {
+            // Repoint dev_flash / dev_hdd0 into the writable sandbox first, then
+            // bring the core up.
+            ips3_core_setup_vfs(Self.documents.path)
+            ips3_core_init()
+            didInit = true
+        }
         let path = Self.gamesDirectory.appendingPathComponent(fileName).path
         MemoryReport.shared.log("pre-boot:\(fileName)")
         let code = ips3_core_boot(path)
