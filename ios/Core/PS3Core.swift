@@ -29,24 +29,35 @@ final class PS3Core: EmuCore, @unchecked Sendable {
 
     // MARK: Lifecycle
     func boot(game fileName: String) {
-        if !didInit {
-            // Repoint dev_flash / dev_hdd0 into the writable sandbox first, then
-            // install firmware (once) if the user imported a .PUP, then bring the
-            // core up.
-            ips3_core_setup_vfs(Self.documents.path)
-            installFirmwareIfNeeded()
-            ips3_core_init()
-            didInit = true
+        // The core work (VFS setup, Init, firmware install, boot) is heavy —
+        // firmware install alone unpacks a ~200 MB PUP — so it MUST run off the
+        // main thread, or the UI freezes and looks hung (which it did).
+        let docs = Self.documents.path
+        let gamePath = Self.gamesDirectory.appendingPathComponent(fileName).path
+        state = .running
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            if !self.didInit {
+                // VFS → then Init (which brings the VFS up) → THEN firmware
+                // install (it needs the initialised VFS); this order matters.
+                ips3_core_setup_vfs(docs)
+                MemoryReport.shared.log("pre-init")
+                ips3_core_init()
+                MemoryReport.shared.log("post-init")
+                self.installFirmwareIfNeeded()
+                self.didInit = true
+            }
+            MemoryReport.shared.log("pre-boot:\(fileName)")
+            let code = ips3_core_boot(gamePath)
+            let name = String(cString: ips3_core_boot_result_name(code))
+            MemoryReport.shared.log("post-boot:\(name)")
+            NSLog("[iPS3 PS3Core] boot(%@) -> %@ (footprint %.1f MB)",
+                  fileName, name, ips3_core_footprint_mb())
+            DispatchQueue.main.async {
+                self.state = (code == 0) ? .running : .stopped
+                self.currentGame = (code == 0) ? fileName : nil
+            }
         }
-        let path = Self.gamesDirectory.appendingPathComponent(fileName).path
-        MemoryReport.shared.log("pre-boot:\(fileName)")
-        let code = ips3_core_boot(path)
-        let name = String(cString: ips3_core_boot_result_name(code))
-        MemoryReport.shared.log("post-boot:\(name)")
-        NSLog("[iPS3 PS3Core] boot(%@) -> %@ (footprint %.1f MB)",
-              fileName, name, ips3_core_footprint_mb())
-        state = (code == 0) ? .running : .stopped
-        currentGame = (code == 0) ? fileName : nil
     }
 
     /// Install the imported firmware into dev_flash once. The user drops a
